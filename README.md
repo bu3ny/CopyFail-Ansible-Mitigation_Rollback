@@ -1,15 +1,12 @@
-# CopyFail Mitigation Role
+# Linux mitigations: CopyFail and Dirty Frag (Ansible)
 
-This role applies or rolls back the temporary CopyFail mitigation on **Linux
-servers** by persisting `initcall_blacklist=algif_aead_init` (and related
-runtime controls). Supported families: **Red Hat-like** (grubby), **Debian-like**
-(`/etc/default/grub` + `update-grub`), and **SUSE** (same default file +
-`grub2-mkconfig`).
+This repository ships Ansible **roles** (and playbooks) to apply or roll back:
 
-In this repository the role lives under **`roles/copyfail_mitigation/`** and
-`ansible.cfg` sets **`roles_path = ./roles`**. Run playbooks from the repository
-root (where `ansible.cfg` lives) so Ansible resolves the role name
-`copyfail_mitigation` correctly.
+- **CopyFail** (**CVE-2026-31431**) — `initcall_blacklist=algif_aead_init`, modprobe policy, bootloader updates (**`roles/copyfail_mitigation/`**).
+- **Dirty Frag / Copy.Fail2** (**CVE-2026-43284**, **CVE-2026-43500**) — modprobe policy for **`esp4`**, **`esp6`**, **`rxrpc`**, optional sysctl, reboot when needed (**`roles/dirtyfrag_mitigation/`**).
+- **Coalesced reboot** — **`roles/mitigation_coalesce_reboot/`** plus **`coalesce_*.yaml`** so both mitigations can share **one** reboot when desired.
+
+`ansible.cfg` sets **`roles_path = ./roles`**. Run playbooks from this **repository root** so role names (`copyfail_mitigation`, `dirtyfrag_mitigation`, …) resolve.
 
 ### Repository playbooks
 
@@ -71,7 +68,9 @@ directory (e.g. only `role:` points at Copy-Fail). Run **`ansible-playbook -v`**
 should see **`copyfail_mitigation role revision 2026.05.03+cve-dropin`** early in the play;
 if the revision is missing or different, you are not running this checkout.
 
-## Behavior
+## CopyFail role behavior (`copyfail_mitigation`)
+
+The bullets below describe **`copyfail_mitigation`** only. For **Dirty Frag**, see **`roles/dirtyfrag_mitigation/README.md`** (modprobe/sysctl/reboot flow, EL6 caveats, summaries).
 
 - Applies when the host matches an allowlisted **`ansible_facts['distribution']`**
   (see `defaults/main.yml`: RHEL/CentOS/Fedora/Amazon Linux/Alma/Rocky/Oracle/Scientific,
@@ -181,8 +180,10 @@ if the revision is missing or different, you are not running this checkout.
 
 ## Required packages / binaries (preflight)
 
-| OS family | Bootloader path | Typical packages / binaries |
-|-----------|-----------------|----------------------------|
+**CopyFail** needs bootloader tooling per OS family (below) plus **`modprobe`**. **Dirty Frag** does **not** edit GRUB; it needs **`modprobe`** (and **`sysctl`** if you enable the optional userns sysctl). See each role’s README for full preflight lists.
+
+| OS family | Bootloader path (CopyFail) | Typical packages / binaries |
+|-----------|-----------------------------|-------------------------------|
 | Red Hat-like (RHEL, CentOS, Fedora, Amazon Linux, Alma, Rocky, Oracle, Scientific, …) | `grubby` | `grubby` (often `dnf install grubby` / `yum install grubby`) |
 | Debian-like (Ubuntu, Debian, …) | `/etc/default/grub` + `update-grub` | `grub-common`; BIOS/UEFI metapackages (`grub-pc`, `grub-efi-amd64`, …) |
 | SUSE (SLES, openSUSE) | `/etc/default/grub` + `grub2-mkconfig` | `grub2` |
@@ -190,6 +191,8 @@ if the revision is missing or different, you are not running this checkout.
 `modprobe` is required on all paths (kernel `kmod` stack).
 
 ## Variables
+
+### CopyFail (`copyfail_mitigation`)
 
 ```yaml
 copyfail_mitigation_state: present
@@ -216,11 +219,29 @@ copyfail_mitigation_supported_rhel_major_versions:
 # copyfail_mitigation_supported_suse_distributions: [...]
 ```
 
+### Dirty Frag (`dirtyfrag_mitigation`)
+
+Defaults and full list: **`roles/dirtyfrag_mitigation/defaults/main.yml`**. Common knobs:
+
+```yaml
+dirtyfrag_mitigation_state: present
+dirtyfrag_mitigation_reboot: true
+dirtyfrag_mitigation_reboot_allowed_group: dirtyfrag_safe_to_reboot
+dirtyfrag_mitigation_manual_reboot_group: dirtyfrag_manual_reboot
+dirtyfrag_mitigation_modprobe_path: /etc/modprobe.d/dirtyfrag-mitigation.conf
+dirtyfrag_mitigation_verify_modprobe_policy_after_rollback: true
+dirtyfrag_mitigation_unprivileged_userns_sysctl: false
+mitigation_coalesce_reboot: false
+# dirtyfrag_mitigation_modules: [esp4, esp6, rxrpc]  # default list
+```
+
+Coalesced plays also need **`mitigation_coalesce_reboot: true`** on the play (see **`coalesce_*.yaml`**). Example **`group_vars`** for both roles’ reboot groups lives under **`ansible_collections/bu3ny/mitigation/examples/group_vars/`** (`copyfail_safe_to_reboot.yml`, `dirtyfrag_safe_to_reboot.yml`).
+
 ## Example usage
 
-Prefer the repo playbooks **`copyfail_mitigate.yaml`** and **`copyfail_rollback.yaml`** (see **Repository playbooks**). Equivalent inline play:
+Use the **Repository playbooks** table at the top (`copyfail_*`, `dirtyfrag_*`, `coalesce_*`). Inline equivalents:
 
-Apply the mitigation (requires root on the target for `grubby`, `modprobe`, and `/etc/modprobe.d`):
+**CopyFail** (needs root for bootloader, `modprobe`, `/etc/modprobe.d`):
 
 ```yaml
 - hosts: all
@@ -229,37 +250,46 @@ Apply the mitigation (requires root on the target for `grubby`, `modprobe`, and 
     - role: copyfail_mitigation
 ```
 
-Inventory can steer reboot behavior per host. Hosts in `copyfail_safe_to_reboot` allow automated reboot even when `copyfail_mitigation_reboot` is false; hosts in `copyfail_manual_reboot` never reboot from this role (manual reboot required). If a host matched both groups, `copyfail_manual_reboot` wins.
+**Dirty Frag** (needs root for `modprobe`, `/etc/modprobe.d`, optional sysctl):
 
-Use names that resolve from your controller (`getent hosts …` / `ping`), or set **`ansible_host`** to the target IP. Ad hoc inventory example: **`ansible-playbook -i 'root@203.0.113.10,' copyfail_rollback.yaml --ask-pass --user root`**.
+```yaml
+- hosts: all
+  gather_facts: false
+  become: true
+  roles:
+    - role: dirtyfrag_mitigation
+```
+
+**Reboot groups:** each role has its own allowed / manual group names (defaults: `copyfail_safe_to_reboot` / `copyfail_manual_reboot`, `dirtyfrag_safe_to_reboot` / `dirtyfrag_manual_reboot`). Hosts in `*_safe_to_reboot` allow automated reboot even when `*_mitigation_reboot` is false; `*_manual_reboot` forces no auto-reboot from that role. If a host is in **both** allowed and manual for **the same** role, **manual wins**.
+
+Use names that resolve from your controller (`getent hosts …` / `ping`), or set **`ansible_host`**. Example: **`ansible-playbook -i 'root@203.0.113.10,' copyfail_rollback.yaml --ask-pass --user root`**.
 
 ```ini
 [copyfail_safe_to_reboot]
 rhel-vm-01
-rhel-vm-02
 
 [copyfail_manual_reboot]
 rhel-db-01
-rhel-db-02
+
+[dirtyfrag_safe_to_reboot]
+rhel-vm-01
+
+[dirtyfrag_manual_reboot]
+rhel-db-01
 ```
 
-Roll the mitigation back:
-
-```yaml
-- name: Roll back CopyFail mitigation
-  hosts: all
-  gather_facts: false
-  become: true
-  roles:
-    - role: copyfail_mitigation
-      vars:
-        copyfail_mitigation_state: absent
-```
+Example **`group_vars`** for lab-style defaults: **`ansible_collections/bu3ny/mitigation/examples/group_vars/`**.
 
 ## Verification
 
-After rebooting, confirm the running kernel command line:
+**CopyFail** — after reboot, confirm the mitigation is on the running kernel cmdline:
 
 ```bash
-cat /proc/cmdline | grep initcall_blacklist
+grep -E 'initcall_blacklist|algif_aead' /proc/cmdline
+```
+
+**Dirty Frag** — confirm modprobe policy (no load path for blocked modules), e.g.:
+
+```bash
+modprobe -n -v esp4 esp6 rxrpc
 ```
