@@ -1,0 +1,174 @@
+---
+- name: Read current grubby kernel entries (Red Hat family)
+  ansible.builtin.command:
+    argv:
+      - grubby
+      - --info=ALL
+  register: copyfail_mitigation_grubby_info
+  changed_when: false
+  when: copyfail_mitigation_bootloader_backend == 'grubby'
+
+- name: Extract kernel argument lists from grubby output
+  ansible.builtin.set_fact:
+    copyfail_mitigation_grubby_args_lines: >-
+      {{ copyfail_mitigation_grubby_info.stdout | regex_findall('(?m)^args="([^"]*)"$') }}
+  when: copyfail_mitigation_bootloader_backend == 'grubby'
+
+- name: Read GRUB defaults file (Debian / SUSE)
+  ansible.builtin.slurp:
+    src: "{{ copyfail_mitigation_default_grub_path }}"
+  register: copyfail_mitigation_grub_default_slurp
+  when: copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+
+- name: Decode GRUB defaults file (Debian / SUSE)
+  ansible.builtin.set_fact:
+    copyfail_mitigation_grub_default_body: "{{ copyfail_mitigation_grub_default_slurp.content | b64decode }}"
+  when: copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+
+- name: Warn when GRUB defaults contain duplicate cmdline assignments (Debian / SUSE)
+  ansible.builtin.debug:
+    msg: >-
+      CopyFail: {{ item.label }} appears more than once in {{ copyfail_mitigation_default_grub_path }}.
+      Only the first assignment is modeled; remove duplicates so the file is unambiguous.
+  loop:
+    - { label: GRUB_CMDLINE_LINUX_DEFAULT, pattern: '^GRUB_CMDLINE_LINUX_DEFAULT=' }
+    - { label: GRUB_CMDLINE_LINUX, pattern: '^GRUB_CMDLINE_LINUX=' }
+  when:
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+    - >-
+      (copyfail_mitigation_grub_default_body | regex_findall('(?m)' ~ item.pattern))
+      | length > 1
+
+- name: Extract GRUB_CMDLINE variables for bootloader state (Debian / SUSE)
+  ansible.builtin.set_fact:
+    copyfail_mitigation_grub_cmdline_linux_default_exists: >-
+      {{ copyfail_mitigation_grub_default_body is search('(?m)^GRUB_CMDLINE_LINUX_DEFAULT=') }}
+    copyfail_mitigation_grub_cmdline_linux_default: >-
+      {{
+        (
+          (copyfail_mitigation_grub_default_body | regex_findall('(?m)^GRUB_CMDLINE_LINUX_DEFAULT="([^"]*)"'))
+          + (copyfail_mitigation_grub_default_body | regex_findall("(?m)^GRUB_CMDLINE_LINUX_DEFAULT='([^']*)'"))
+          + (copyfail_mitigation_grub_default_body | regex_findall('(?m)^GRUB_CMDLINE_LINUX_DEFAULT=([^"''\r\n][^\r\n]*)\s*$'))
+          + (copyfail_mitigation_grub_default_body | regex_findall('(?m)^GRUB_CMDLINE_LINUX_DEFAULT=()\s*$'))
+        )
+        | list
+        | first
+        | default('')
+      }}
+    copyfail_mitigation_grub_cmdline_linux_exists: >-
+      {{ copyfail_mitigation_grub_default_body is search('(?m)^GRUB_CMDLINE_LINUX=') }}
+    copyfail_mitigation_grub_cmdline_linux: >-
+      {{
+        (
+          (copyfail_mitigation_grub_default_body | regex_findall('(?m)^GRUB_CMDLINE_LINUX="([^"]*)"'))
+          + (copyfail_mitigation_grub_default_body | regex_findall("(?m)^GRUB_CMDLINE_LINUX='([^']*)'"))
+          + (copyfail_mitigation_grub_default_body | regex_findall('(?m)^GRUB_CMDLINE_LINUX=([^"''\r\n][^\r\n]*)\s*$'))
+          + (copyfail_mitigation_grub_default_body | regex_findall('(?m)^GRUB_CMDLINE_LINUX=()\s*$'))
+        )
+        | list
+        | first
+        | default('')
+      }}
+  when: copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+
+- name: Collect defined GRUB cmdline variables (Debian / SUSE)
+  ansible.builtin.set_fact:
+    copyfail_mitigation_grub_cmdlines_defined: >-
+      {{
+        ([] + (
+          [copyfail_mitigation_grub_cmdline_linux_default]
+          if copyfail_mitigation_grub_cmdline_linux_default_exists
+          else []
+        ) + (
+          [copyfail_mitigation_grub_cmdline_linux]
+          if copyfail_mitigation_grub_cmdline_linux_exists
+          else []
+        ))
+      }}
+  when: copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+
+- name: Normalize GRUB cmdline variables into grubby-compatible args list (Debian / SUSE)
+  ansible.builtin.set_fact:
+    copyfail_mitigation_grubby_args_lines: "{{ copyfail_mitigation_grub_cmdlines_defined }}"
+    copyfail_mitigation_grubby_info:
+      stdout: "{{ copyfail_mitigation_grub_default_body }}"
+      rc: 0
+  when: copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+
+- name: Warn when no GRUB cmdline variables are parseable and override allows continuing
+  ansible.builtin.debug:
+    msg: >-
+      CopyFail role: could not parse GRUB_CMDLINE_LINUX_DEFAULT / GRUB_CMDLINE_LINUX in
+      {{ copyfail_mitigation_default_grub_path }}. Continuing only because
+      copyfail_mitigation_allow_unparsed_grubby is true.
+  when:
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+    - copyfail_mitigation_allow_unparsed_grubby | bool
+    - not copyfail_mitigation_grub_cmdline_linux_default_exists
+    - not copyfail_mitigation_grub_cmdline_linux_exists
+
+- name: Require parseable GRUB cmdline (Debian / SUSE)
+  ansible.builtin.assert:
+    that:
+      - >-
+        copyfail_mitigation_grub_cmdline_linux_default_exists
+        or copyfail_mitigation_grub_cmdline_linux_exists
+    fail_msg: >-
+      Could not parse GRUB_CMDLINE_LINUX_DEFAULT or GRUB_CMDLINE_LINUX in
+      {{ copyfail_mitigation_default_grub_path }}. Install/fix GRUB defaults or set
+      copyfail_mitigation_allow_unparsed_grubby true only as a temporary override.
+  when:
+    - not (copyfail_mitigation_allow_unparsed_grubby | bool)
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+
+- name: Warn when grubby output is not parseable but override allows continuing
+  ansible.builtin.debug:
+    msg: >-
+      CopyFail role: grubby --info=ALL returned no lines matching ^args="..." so
+      bootloader state is unknown. Continuing only because
+      copyfail_mitigation_allow_unparsed_grubby is true.
+  when:
+    - copyfail_mitigation_bootloader_backend == 'grubby'
+    - copyfail_mitigation_allow_unparsed_grubby | bool
+    - copyfail_mitigation_grubby_args_lines | length == 0
+
+- name: Require parseable grubby kernel args lines
+  ansible.builtin.assert:
+    that:
+      - copyfail_mitigation_grubby_args_lines | length > 0
+    fail_msg: >-
+      grubby --info=ALL produced no parseable ^args="..." lines (rc={{ copyfail_mitigation_grubby_info.rc | default('n/a') }}).
+      This role refuses to change the bootloader without knowing current kernel entries.
+      If grubby output format changed, update the role or set copyfail_mitigation_allow_unparsed_grubby
+      temporarily. First 2048 bytes of stdout: {{ copyfail_mitigation_grubby_info.stdout | default('') | truncate(2048, true, '...') }}
+  when:
+    - not (copyfail_mitigation_allow_unparsed_grubby | bool)
+    - copyfail_mitigation_bootloader_backend == 'grubby'
+
+- name: Determine current mitigation state in kernel entries
+  ansible.builtin.set_fact:
+    copyfail_mitigation_present_on_any_kernel: >-
+      {{
+        (
+          copyfail_mitigation_grubby_args_lines
+          | select(
+              'search',
+              '(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)'
+            )
+          | list
+          | length
+        ) > 0
+      }}
+    copyfail_mitigation_present_on_all_kernels: >-
+      {{
+        copyfail_mitigation_grubby_args_lines | length > 0
+        and (
+          copyfail_mitigation_grubby_args_lines
+          | reject(
+              'search',
+              '(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)'
+            )
+          | list
+          | length
+        ) == 0
+      }}

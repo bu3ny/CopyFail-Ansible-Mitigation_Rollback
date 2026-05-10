@@ -1,0 +1,282 @@
+---
+# --- Preflight: persistence + runtime module sysfs ---------------------------------
+- name: Check whether the Dirty Frag modprobe drop-in exists
+  ansible.builtin.stat:
+    path: "{{ dirtyfrag_mitigation_modprobe_path }}"
+  register: dirtyfrag_mitigation_preflight_modprobe_file
+
+- name: Check whether the optional sysctl drop-in exists
+  ansible.builtin.stat:
+    path: "{{ dirtyfrag_mitigation_sysctl_dropin_path }}"
+  register: dirtyfrag_mitigation_preflight_sysctl_file
+
+- name: Check whether user.max_user_namespaces exists on this kernel
+  ansible.builtin.stat:
+    path: /proc/sys/user/max_user_namespaces
+  register: dirtyfrag_mitigation_stat_max_user_namespaces
+
+- name: Stat sysfs for each affected module
+  ansible.builtin.stat:
+    path: "/sys/module/{{ item }}"
+  loop: "{{ dirtyfrag_mitigation_modules }}"
+  register: dirtyfrag_mitigation_sysfs_stat
+  changed_when: false
+
+- name: Build map of loaded modules
+  ansible.builtin.set_fact:
+    dirtyfrag_mitigation_loaded_modules: >-
+      {{
+        dirtyfrag_mitigation_sysfs_stat.results
+        | selectattr('stat.exists', 'defined')
+        | selectattr('stat.exists')
+        | map(attribute='item')
+        | list
+      }}
+    dirtyfrag_mitigation_preflight_modprobe_block_present: "{{ dirtyfrag_mitigation_preflight_modprobe_file.stat.exists }}"
+
+- name: Report preflight Dirty Frag state
+  ansible.builtin.debug:
+    msg: >-
+      Preflight: modprobe drop-in present={{ dirtyfrag_mitigation_preflight_modprobe_block_present }},
+      loaded modules={{ dirtyfrag_mitigation_loaded_modules }},
+      reboot allowed={{ dirtyfrag_mitigation_reboot_allowed }},
+      sysctl mitigation requested={{ dirtyfrag_mitigation_unprivileged_userns_sysctl | bool }},
+      max_user_namespaces sysctl available={{ dirtyfrag_mitigation_stat_max_user_namespaces.stat.exists | default(false) }}.
+
+- name: Verify required tooling
+  ansible.builtin.include_tasks:
+    file: "{{ role_path }}/tasks/preflight_binaries.yml"
+
+# --- Present -----------------------------------------------------------------------
+- name: Apply Dirty Frag mitigation (modprobe block + optional sysctl)
+  when: dirtyfrag_mitigation_state == 'present'
+  block:
+    - name: Install Dirty Frag modprobe policy (esp4/esp6/rxrpc)
+      ansible.builtin.copy:
+        dest: "{{ dirtyfrag_mitigation_modprobe_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Ansible managed — Dirty Frag / Copy.Fail2 (CVE-2026-43284, CVE-2026-43500)
+          blacklist esp4
+          blacklist esp6
+          blacklist rxrpc
+          install esp4 /bin/false
+          install esp6 /bin/false
+          install rxrpc /bin/false
+
+    - name: Install optional sysctl drop-in (blocks ESP variant via user namespaces; see vendor RHSB)
+      ansible.builtin.copy:
+        dest: "{{ dirtyfrag_mitigation_sysctl_dropin_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Ansible managed — optional Dirty Frag mitigation (user namespaces)
+          user.max_user_namespaces = 0
+      when:
+        - dirtyfrag_mitigation_unprivileged_userns_sysctl | bool
+        - dirtyfrag_mitigation_stat_max_user_namespaces.stat.exists
+
+    - name: Skip sysctl mitigation — kernel has no user.max_user_namespaces (typical EL6)
+      ansible.builtin.debug:
+        msg: >-
+          Not applying user.max_user_namespaces sysctl: /proc/sys/user/max_user_namespaces missing.
+          Use the modprobe block only on this host (or upgrade the kernel).
+      when:
+        - dirtyfrag_mitigation_unprivileged_userns_sysctl | bool
+        - not dirtyfrag_mitigation_stat_max_user_namespaces.stat.exists
+
+    - name: Load sysctl drop-in immediately
+      ansible.builtin.command:
+        argv:
+          - sysctl
+          - -e
+          - -p
+          - "{{ dirtyfrag_mitigation_sysctl_dropin_path }}"
+      when:
+        - dirtyfrag_mitigation_unprivileged_userns_sysctl | bool
+        - dirtyfrag_mitigation_stat_max_user_namespaces.stat.exists
+
+    - name: Try to unload affected modules immediately
+      ansible.builtin.command:
+        argv:
+          - modprobe
+          - -r
+          - "{{ item }}"
+      loop: "{{ dirtyfrag_mitigation_modules }}"
+      register: dirtyfrag_mitigation_rmmod_attempts
+      failed_when: false
+      changed_when: false
+
+    - name: Re-stat sysfs after rmmod attempts
+      ansible.builtin.stat:
+        path: "/sys/module/{{ item }}"
+      loop: "{{ dirtyfrag_mitigation_modules }}"
+      register: dirtyfrag_mitigation_sysfs_post
+      changed_when: false
+
+    - name: Determine modules still present after rmmod
+      ansible.builtin.set_fact:
+        dirtyfrag_mitigation_still_loaded: >-
+          {{
+            dirtyfrag_mitigation_sysfs_post.results
+            | selectattr('stat.exists', 'defined')
+            | selectattr('stat.exists')
+            | map(attribute='item')
+            | list
+          }}
+
+    - name: Detect builtin modules (cannot rmmod)
+      ansible.builtin.set_fact:
+        dirtyfrag_mitigation_any_builtin: >-
+          {{
+            (
+              dirtyfrag_mitigation_rmmod_attempts.results
+              | default([])
+              | map(attribute='stderr')
+              | map('default', '')
+              | join(' ')
+            )
+            is search('is builtin')
+          }}
+
+    - name: Consider runtime protected without reboot
+      ansible.builtin.set_fact:
+        dirtyfrag_mitigation_runtime_protected_without_reboot: >-
+          {{
+            (dirtyfrag_mitigation_still_loaded | length) == 0
+            and not (dirtyfrag_mitigation_any_builtin | bool)
+          }}
+
+    - name: Treat builtin-in-kernel modules as requiring reboot to clear
+      ansible.builtin.set_fact:
+        dirtyfrag_mitigation_runtime_protected_without_reboot: false
+      when: dirtyfrag_mitigation_any_builtin | bool
+
+    - name: Report Dirty Frag mitigation without reboot
+      ansible.builtin.debug:
+        msg: >-
+          esp4/esp6/rxrpc are not loaded; modprobe policy is installed. Reboot not required
+          for immediate unload on this host (IPsec/AFS remain broken until modules load again).
+      when: dirtyfrag_mitigation_runtime_protected_without_reboot | bool
+
+    - name: Group hosts mitigated without reboot
+      ansible.builtin.group_by:
+        key: dirtyfrag_report_mitigated_without_reboot
+      changed_when: false
+      when: dirtyfrag_mitigation_runtime_protected_without_reboot | bool
+
+    - name: Trigger reboot when modules stay loaded or are builtin
+      ansible.builtin.debug:
+        msg: >-
+          {{
+            'One or more of esp4/esp6/rxrpc remain loaded or are builtin; reboot to enforce '
+            ~ 'the new modprobe policy: ' ~ (dirtyfrag_mitigation_still_loaded | join(', '))
+          }}
+      when: not (dirtyfrag_mitigation_runtime_protected_without_reboot | bool)
+      changed_when: true
+      notify: "{{ dirtyfrag_mitigation_reboot_notify }}"
+
+# --- Absent ------------------------------------------------------------------------
+- name: Roll back Dirty Frag mitigation
+  when: dirtyfrag_mitigation_state == 'absent'
+  block:
+    - name: Remove Dirty Frag modprobe drop-in
+      ansible.builtin.file:
+        path: "{{ dirtyfrag_mitigation_modprobe_path }}"
+        state: absent
+
+    - name: Remove sysctl drop-in if this role had installed it
+      ansible.builtin.file:
+        path: "{{ dirtyfrag_mitigation_sysctl_dropin_path }}"
+        state: absent
+
+    - name: Reload sysctl after sysctl drop-in removal
+      ansible.builtin.command:
+        argv:
+          - sysctl
+          - --system
+      register: dirtyfrag_mitigation_sysctl_reload
+      failed_when: false
+      changed_when: dirtyfrag_mitigation_sysctl_reload.rc == 0
+      when: dirtyfrag_mitigation_preflight_sysctl_file.stat.exists | default(false)
+
+    - name: Dry-run modprobe resolution after rollback (detect foreign blocks)
+      ansible.builtin.command:
+        argv:
+          - modprobe
+          - -n
+          - -v
+          - "{{ item }}"
+      loop: "{{ dirtyfrag_mitigation_modules }}"
+      register: dirtyfrag_mitigation_post_rollback_dry
+      changed_when: false
+      failed_when: false
+
+    - name: Warn when another modprobe.d rule still blocks esp4/esp6/rxrpc
+      ansible.builtin.debug:
+        msg: >-
+          Rollback removed {{ dirtyfrag_mitigation_modprobe_path }}, but modprobe -n -v {{ item.item }}
+          still suggests a block — check other files under /etc/modprobe.d/.
+      loop: "{{ dirtyfrag_mitigation_post_rollback_dry.results | default([]) }}"
+      when:
+        - not (item.skipped | default(false))
+        - >-
+          (
+            ((item.stdout | default('')) ~ (item.stderr | default('')))
+            is search('(?i)/bin/false')
+          )
+          or (
+            ((item.stdout | default('')) ~ (item.stderr | default('')))
+            is search('(?i)blacklist')
+          )
+
+    # Same idea as CopyFail rollback: persistence is gone, but the *running* kernel may still
+    # carry loaded modules until reboot — finish rollback with a cycle when needed.
+    - name: Re-check sysfs after rollback (esp4/esp6/rxrpc may still be loaded)
+      ansible.builtin.stat:
+        path: "/sys/module/{{ item }}"
+      loop: "{{ dirtyfrag_mitigation_modules }}"
+      register: dirtyfrag_mitigation_post_rollback_sysfs
+      changed_when: false
+
+    - name: Summarize modules still loaded after rollback persistence removed
+      ansible.builtin.set_fact:
+        dirtyfrag_mitigation_rollback_modules_still_loaded: >-
+          {{
+            dirtyfrag_mitigation_post_rollback_sysfs.results
+            | selectattr('stat.exists', 'defined')
+            | selectattr('stat.exists')
+            | map(attribute='item')
+            | list
+          }}
+
+    - name: Trigger reboot when runtime still has esp4/esp6/rxrpc loaded (complete rollback)
+      ansible.builtin.debug:
+        msg: >-
+          Dirty Frag rollback removed modprobe/sysctl persistence, but esp4/esp6/rxrpc are
+          still loaded in the running kernel ({{ dirtyfrag_mitigation_rollback_modules_still_loaded | join(', ') }}).
+          Reboot is required to complete rollback (same pattern as CopyFail when the boot cmdline still carries mitigation).
+      when: (dirtyfrag_mitigation_rollback_modules_still_loaded | length) > 0
+      changed_when: true
+      notify: "{{ dirtyfrag_mitigation_reboot_notify }}"
+
+    - name: Group hosts where rollback found no persistence to remove
+      ansible.builtin.group_by:
+        key: dirtyfrag_report_rollback_noop_target_clean
+      changed_when: false
+      when:
+        - not dirtyfrag_mitigation_preflight_modprobe_block_present
+        - not (dirtyfrag_mitigation_preflight_sysctl_file.stat.exists | default(false))
+
+    - name: Group hosts rolled back without reboot (persistence removed; modules not loaded)
+      ansible.builtin.group_by:
+        key: dirtyfrag_report_rolled_back_without_reboot
+      changed_when: false
+      when:
+        - >-
+          dirtyfrag_mitigation_preflight_modprobe_block_present
+          or (dirtyfrag_mitigation_preflight_sysctl_file.stat.exists | default(false))
+        - (dirtyfrag_mitigation_rollback_modules_still_loaded | length) == 0

@@ -1,0 +1,127 @@
+---
+- name: Re-read GRUB defaults before rollback edits (Debian / SUSE)
+  ansible.builtin.slurp:
+    src: "{{ copyfail_mitigation_default_grub_path }}"
+  register: copyfail_mitigation_grub_default_slurp
+  when: copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+
+# Skips when no grubby entry contained the mitigation (nothing to remove).
+# grubby usually gives no stdout/stderr on success; keep changed_when true for honest task outcomes.
+- name: Remove CopyFail mitigation boot argument (grubby)
+  ansible.builtin.command:
+    argv:
+      - grubby
+      - --update-kernel=ALL
+      - "--remove-args={{ copyfail_mitigation_kernel_arg }}"
+  when:
+    - copyfail_mitigation_bootloader_backend == 'grubby'
+    - copyfail_mitigation_present_on_any_kernel
+  changed_when: true
+
+- name: Remove CopyFail mitigation from GRUB_CMDLINE_LINUX_DEFAULT double-quoted (Debian / SUSE)
+  ansible.builtin.replace:
+    path: "{{ copyfail_mitigation_default_grub_path }}"
+    regexp: '^(GRUB_CMDLINE_LINUX_DEFAULT=")([^"]*)( ?){{ copyfail_mitigation_kernel_arg | regex_escape }}([^"]*)(")$'
+    replace: '\1\2\4\5'
+  when:
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+    - copyfail_mitigation_present_on_any_kernel
+    - copyfail_mitigation_grub_cmdline_linux_default_exists
+    - >-
+      copyfail_mitigation_grub_cmdline_linux_default
+      is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)')
+    - (copyfail_mitigation_grub_default_slurp.content | b64decode) is search('(?m)^GRUB_CMDLINE_LINUX_DEFAULT="')
+
+- name: Remove CopyFail mitigation from GRUB_CMDLINE_LINUX_DEFAULT single-quoted (Debian / SUSE)
+  ansible.builtin.replace:
+    path: "{{ copyfail_mitigation_default_grub_path }}"
+    regexp: "^(GRUB_CMDLINE_LINUX_DEFAULT=')([^']*)( ?){{ copyfail_mitigation_kernel_arg | regex_escape }}([^']*)(')$"
+    replace: "\\1\\2\\4\\5"
+  when:
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+    - copyfail_mitigation_present_on_any_kernel
+    - copyfail_mitigation_grub_cmdline_linux_default_exists
+    - >-
+      copyfail_mitigation_grub_cmdline_linux_default
+      is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)')
+    - (copyfail_mitigation_grub_default_slurp.content | b64decode) is search("(?m)^GRUB_CMDLINE_LINUX_DEFAULT='")
+
+- name: Remove CopyFail mitigation from GRUB_CMDLINE_LINUX_DEFAULT unquoted (Debian / SUSE)
+  ansible.builtin.replace:
+    path: "{{ copyfail_mitigation_default_grub_path }}"
+    regexp: "^(GRUB_CMDLINE_LINUX_DEFAULT=)([^\"\\r\\n]*?)( ?){{ copyfail_mitigation_kernel_arg | regex_escape }}([^\"\\r\\n]*)\\s*$"
+    replace: '\1\2\4'
+  when:
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+    - copyfail_mitigation_present_on_any_kernel
+    - copyfail_mitigation_grub_cmdline_linux_default_exists
+    - >-
+      copyfail_mitigation_grub_cmdline_linux_default
+      is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)')
+    - >-
+      (copyfail_mitigation_grub_default_slurp.content | b64decode) is search('(?m)^GRUB_CMDLINE_LINUX_DEFAULT=[^"''\r\n]')
+      or (copyfail_mitigation_grub_default_slurp.content | b64decode) is search('(?m)^GRUB_CMDLINE_LINUX_DEFAULT=\s*$')
+
+- name: Remove CopyFail mitigation from GRUB_CMDLINE_LINUX double-quoted (Debian / SUSE)
+  ansible.builtin.replace:
+    path: "{{ copyfail_mitigation_default_grub_path }}"
+    regexp: '^(GRUB_CMDLINE_LINUX=")([^"]*)( ?){{ copyfail_mitigation_kernel_arg | regex_escape }}([^"]*)(")$'
+    replace: '\1\2\4\5'
+  when:
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+    - copyfail_mitigation_present_on_any_kernel
+    - copyfail_mitigation_grub_cmdline_linux_exists
+    - >-
+      copyfail_mitigation_grub_cmdline_linux
+      is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)')
+    - (copyfail_mitigation_grub_default_slurp.content | b64decode) is search('(?m)^GRUB_CMDLINE_LINUX="')
+
+- name: Remove CopyFail mitigation from GRUB_CMDLINE_LINUX single-quoted (Debian / SUSE)
+  ansible.builtin.replace:
+    path: "{{ copyfail_mitigation_default_grub_path }}"
+    regexp: "^(GRUB_CMDLINE_LINUX=')([^']*)( ?){{ copyfail_mitigation_kernel_arg | regex_escape }}([^']*)(')$"
+    replace: "\\1\\2\\4\\5"
+  when:
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+    - copyfail_mitigation_present_on_any_kernel
+    - copyfail_mitigation_grub_cmdline_linux_exists
+    - >-
+      copyfail_mitigation_grub_cmdline_linux
+      is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)')
+    - (copyfail_mitigation_grub_default_slurp.content | b64decode) is search("(?m)^GRUB_CMDLINE_LINUX='")
+
+- name: Remove CopyFail mitigation from GRUB_CMDLINE_LINUX unquoted (Debian / SUSE)
+  ansible.builtin.replace:
+    path: "{{ copyfail_mitigation_default_grub_path }}"
+    regexp: "^(GRUB_CMDLINE_LINUX=)([^\"\\r\\n]*?)( ?){{ copyfail_mitigation_kernel_arg | regex_escape }}([^\"\\r\\n]*)\\s*$"
+    replace: '\1\2\4'
+  when:
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+    - copyfail_mitigation_present_on_any_kernel
+    - copyfail_mitigation_grub_cmdline_linux_exists
+    - >-
+      copyfail_mitigation_grub_cmdline_linux
+      is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)')
+    - >-
+      (copyfail_mitigation_grub_default_slurp.content | b64decode) is search('(?m)^GRUB_CMDLINE_LINUX=[^"''\r\n]')
+      or (copyfail_mitigation_grub_default_slurp.content | b64decode) is search('(?m)^GRUB_CMDLINE_LINUX=\s*$')
+
+- name: Regenerate GRUB configuration after rollback (Debian family)
+  ansible.builtin.command:
+    argv:
+      - update-grub
+  when:
+    - copyfail_mitigation_bootloader_backend == 'debian'
+    - copyfail_mitigation_present_on_any_kernel
+  changed_when: false
+
+- name: Regenerate GRUB configuration after rollback (SUSE)
+  ansible.builtin.command:
+    argv:
+      - grub2-mkconfig
+      - "-o"
+      - "{{ copyfail_mitigation_suse_grub_mkconfig_output }}"
+  when:
+    - copyfail_mitigation_bootloader_backend == 'suse'
+    - copyfail_mitigation_present_on_any_kernel
+  changed_when: false

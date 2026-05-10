@@ -1,0 +1,7 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+
+# Ansible Galaxy collection build artifacts (rebuild with ansible-galaxy collection build)
+ansible_collections/bu3ny/mitigation/bu3ny-mitigation-*.tar.gz

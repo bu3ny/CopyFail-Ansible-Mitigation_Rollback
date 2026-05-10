@@ -1,0 +1,134 @@
+---
+# Second and later applies skip when grubby state already shows the arg on every entry.
+# grubby typically exits 0 with no stdout/stderr even when it applies args, so changed_when stays true.
+- name: Apply CopyFail mitigation boot argument (grubby)
+  ansible.builtin.command:
+    argv:
+      - grubby
+      - --update-kernel=ALL
+      - "--args={{ copyfail_mitigation_kernel_arg }}"
+  when:
+    - copyfail_mitigation_bootloader_backend == 'grubby'
+    - not copyfail_mitigation_present_on_all_kernels
+  changed_when: true
+
+- name: Append CopyFail mitigation to GRUB_CMDLINE_LINUX_DEFAULT (Debian / SUSE)
+  ansible.builtin.replace:
+    path: "{{ copyfail_mitigation_default_grub_path }}"
+    regexp: '^(GRUB_CMDLINE_LINUX_DEFAULT=)(?:")([^"]*)(")$'
+    replace: '\1"\2 {{ copyfail_mitigation_kernel_arg }}\3'
+  when:
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+    - not copyfail_mitigation_present_on_all_kernels
+    - copyfail_mitigation_grub_cmdline_linux_default_exists
+    - >-
+      not (
+        copyfail_mitigation_grub_cmdline_linux_default
+        is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)')
+      )
+    - (copyfail_mitigation_grub_default_slurp.content | b64decode) is search('(?m)^GRUB_CMDLINE_LINUX_DEFAULT="')
+
+- name: Append CopyFail mitigation to GRUB_CMDLINE_LINUX_DEFAULT single-quoted (Debian / SUSE)
+  ansible.builtin.replace:
+    path: "{{ copyfail_mitigation_default_grub_path }}"
+    regexp: "^(GRUB_CMDLINE_LINUX_DEFAULT=)(?:')([^']*)(')$"
+    replace: "\\1'\\2 {{ copyfail_mitigation_kernel_arg }}\\3"
+  when:
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+    - not copyfail_mitigation_present_on_all_kernels
+    - copyfail_mitigation_grub_cmdline_linux_default_exists
+    - >-
+      not (
+        copyfail_mitigation_grub_cmdline_linux_default
+        is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)')
+      )
+    - (copyfail_mitigation_grub_default_slurp.content | b64decode) is search("(?m)^GRUB_CMDLINE_LINUX_DEFAULT='")
+
+- name: Append CopyFail mitigation to GRUB_CMDLINE_LINUX_DEFAULT unquoted (Debian / SUSE)
+  ansible.builtin.replace:
+    path: "{{ copyfail_mitigation_default_grub_path }}"
+    regexp: "^(GRUB_CMDLINE_LINUX_DEFAULT=)((?:[^\"'\\r\\n][^\\r\\n]*)?)\\s*$"
+    replace: '\1\2 {{ copyfail_mitigation_kernel_arg }}'
+  when:
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+    - not copyfail_mitigation_present_on_all_kernels
+    - copyfail_mitigation_grub_cmdline_linux_default_exists
+    - >-
+      not (
+        copyfail_mitigation_grub_cmdline_linux_default
+        is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)')
+      )
+    - >-
+      (copyfail_mitigation_grub_default_slurp.content | b64decode) is search('(?m)^GRUB_CMDLINE_LINUX_DEFAULT=[^"''\r\n]')
+      or (copyfail_mitigation_grub_default_slurp.content | b64decode) is search('(?m)^GRUB_CMDLINE_LINUX_DEFAULT=\s*$')
+
+- name: Append CopyFail mitigation to GRUB_CMDLINE_LINUX (Debian / SUSE)
+  ansible.builtin.replace:
+    path: "{{ copyfail_mitigation_default_grub_path }}"
+    regexp: '^(GRUB_CMDLINE_LINUX=)(?:")([^"]*)(")$'
+    replace: '\1"\2 {{ copyfail_mitigation_kernel_arg }}\3'
+  when:
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+    - not copyfail_mitigation_present_on_all_kernels
+    - copyfail_mitigation_grub_cmdline_linux_exists
+    - >-
+      not (
+        copyfail_mitigation_grub_cmdline_linux
+        is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)')
+      )
+    - (copyfail_mitigation_grub_default_slurp.content | b64decode) is search('(?m)^GRUB_CMDLINE_LINUX="')
+
+- name: Append CopyFail mitigation to GRUB_CMDLINE_LINUX single-quoted (Debian / SUSE)
+  ansible.builtin.replace:
+    path: "{{ copyfail_mitigation_default_grub_path }}"
+    regexp: "^(GRUB_CMDLINE_LINUX=)(?:')([^']*)(')$"
+    replace: "\\1'\\2 {{ copyfail_mitigation_kernel_arg }}\\3"
+  when:
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+    - not copyfail_mitigation_present_on_all_kernels
+    - copyfail_mitigation_grub_cmdline_linux_exists
+    - >-
+      not (
+        copyfail_mitigation_grub_cmdline_linux
+        is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)')
+      )
+    - (copyfail_mitigation_grub_default_slurp.content | b64decode) is search("(?m)^GRUB_CMDLINE_LINUX='")
+
+- name: Append CopyFail mitigation to GRUB_CMDLINE_LINUX unquoted (Debian / SUSE)
+  ansible.builtin.replace:
+    path: "{{ copyfail_mitigation_default_grub_path }}"
+    regexp: "^(GRUB_CMDLINE_LINUX=)((?:[^\"'\\r\\n][^\\r\\n]*)?)\\s*$"
+    replace: '\1\2 {{ copyfail_mitigation_kernel_arg }}'
+  when:
+    - copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+    - not copyfail_mitigation_present_on_all_kernels
+    - copyfail_mitigation_grub_cmdline_linux_exists
+    - >-
+      not (
+        copyfail_mitigation_grub_cmdline_linux
+        is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)')
+      )
+    - >-
+      (copyfail_mitigation_grub_default_slurp.content | b64decode) is search('(?m)^GRUB_CMDLINE_LINUX=[^"''\r\n]')
+      or (copyfail_mitigation_grub_default_slurp.content | b64decode) is search('(?m)^GRUB_CMDLINE_LINUX=\s*$')
+
+- name: Regenerate GRUB configuration (Debian family)
+  ansible.builtin.command:
+    argv:
+      - update-grub
+  when:
+    - copyfail_mitigation_bootloader_backend == 'debian'
+    - not copyfail_mitigation_present_on_all_kernels
+  # Idempotency: GRUB file edits above already report changed; regen is follow-up only.
+  changed_when: false
+
+- name: Regenerate GRUB configuration (SUSE)
+  ansible.builtin.command:
+    argv:
+      - grub2-mkconfig
+      - "-o"
+      - "{{ copyfail_mitigation_suse_grub_mkconfig_output }}"
+  when:
+    - copyfail_mitigation_bootloader_backend == 'suse'
+    - not copyfail_mitigation_present_on_all_kernels
+  changed_when: false

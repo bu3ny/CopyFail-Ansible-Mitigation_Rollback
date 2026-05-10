@@ -1,0 +1,12 @@
+---
+# Pair: playbook-copyfail-mitigate.yml — see collection README for all six example playbooks.
+- name: Roll back CopyFail mitigation
+  hosts: all
+  gather_facts: false
+  become: true
+  collections:
+    - bu3ny.mitigation
+  roles:
+    - role: bu3ny.mitigation.copyfail_mitigation
+      vars:
+        copyfail_mitigation_state: absent

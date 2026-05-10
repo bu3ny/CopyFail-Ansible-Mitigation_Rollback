@@ -1,0 +1,306 @@
+---
+# Read the active booted kernel parameters so we can detect partial convergence.
+- name: Read current runtime kernel command line
+  ansible.builtin.command:
+    argv:
+      - cat
+      - /proc/cmdline
+  register: copyfail_mitigation_runtime_cmdline
+  changed_when: false
+
+# Check the current runtime module state before we touch bootloader settings.
+- name: Check whether algif_aead is loaded before changes
+  ansible.builtin.stat:
+    path: /sys/module/algif_aead
+  register: copyfail_mitigation_preflight_algif_aead_module
+
+# Check whether a persistent modprobe block already exists.
+- name: Check whether the modprobe block file exists before changes
+  ansible.builtin.stat:
+    path: "{{ copyfail_mitigation_modprobe_path }}"
+  register: copyfail_mitigation_preflight_modprobe_file
+
+# Normalize preflight values into simple booleans reused by later decisions.
+- name: Summarize preflight state
+  ansible.builtin.set_fact:
+    copyfail_mitigation_preflight_kernel_arg_active: >-
+      {{
+        copyfail_mitigation_runtime_cmdline.stdout is search(
+          '(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)'
+        )
+      }}
+    copyfail_mitigation_preflight_module_loaded: "{{ copyfail_mitigation_preflight_algif_aead_module.stat.exists }}"
+    copyfail_mitigation_preflight_modprobe_block_present: "{{ copyfail_mitigation_preflight_modprobe_file.stat.exists }}"
+
+# Emit current state so operators can see whether the host was already partially mitigated.
+- name: Report preflight mitigation state
+  ansible.builtin.debug:
+    msg: >-
+      Preflight: kernel argument active={{ copyfail_mitigation_preflight_kernel_arg_active }},
+      algif_aead loaded={{ copyfail_mitigation_preflight_module_loaded }},
+      modprobe block present={{ copyfail_mitigation_preflight_modprobe_block_present }},
+      reboot allowed={{ copyfail_mitigation_reboot_allowed }},
+      reboot timeout={{ copyfail_mitigation_reboot_timeout }} seconds.
+
+- name: Verify bootloader and modprobe tooling is present
+  ansible.builtin.include_tasks:
+    file: "{{ role_path }}/tasks/preflight_binaries.yml"
+
+- name: Discover bootloader kernel cmdline state
+  ansible.builtin.include_tasks:
+    file: "{{ role_path }}/tasks/bootloader_gather_state.yml"
+
+# Apply path: first secure runtime state immediately, then make the mitigation persistent.
+- name: Apply CopyFail mitigation
+  when: copyfail_mitigation_state == 'present'
+  block:
+    # Prevent the module from being loaded again before the next reboot.
+    - name: Create the modprobe block file
+      ansible.builtin.copy:
+        dest: "{{ copyfail_mitigation_modprobe_path }}"
+        content: |
+          install algif_aead /bin/false
+        owner: root
+        group: root
+        mode: "0644"
+
+    # Persist the vendor-recommended boot-time mitigation for future boots.
+    - name: Apply CopyFail mitigation boot argument (bootloader-specific)
+      ansible.builtin.include_tasks:
+        file: "{{ role_path }}/tasks/bootloader_apply_present.yml"
+
+    # Try to make the currently running system safe immediately without rebooting.
+    # Run this whenever the current kernel is not already booted with the mitigation arg:
+    # a dynamic module may unload cleanly, while a builtin kernel will report "is builtin".
+    - name: Try to unload algif_aead immediately
+      ansible.builtin.command:
+        argv:
+          - modprobe
+          - -r
+          - algif_aead
+      register: copyfail_mitigation_unload_attempt
+      failed_when: false
+      changed_when: copyfail_mitigation_unload_attempt.rc == 0
+      when:
+        - not copyfail_mitigation_preflight_kernel_arg_active
+
+    # Always stat here (even when unload was skipped) so the register is defined for set_fact below.
+    - name: Check whether algif_aead is loaded after the unload attempt
+      ansible.builtin.stat:
+        path: /sys/module/algif_aead
+      register: copyfail_mitigation_post_unload_algif_aead_module
+
+    # Builtin only comes from modprobe stderr when unload actually ran (skipped => false).
+    - name: Determine whether algif_aead is effectively builtin at runtime
+      ansible.builtin.set_fact:
+        copyfail_mitigation_runtime_module_is_builtin: >-
+          {{
+            (
+              (
+                copyfail_mitigation_unload_attempt.stderr
+                | default('', true)
+              ) is search('is builtin')
+            )
+            if not (copyfail_mitigation_unload_attempt.skipped | default(false))
+            else false
+          }}
+
+    # If the running kernel already has the mitigation on the cmdline, we are done for
+    # runtime convergence (no modprobe -r in that path; sysfs may still show the module).
+    - name: Summarize runtime mitigation result
+      ansible.builtin.set_fact:
+        copyfail_mitigation_runtime_protected_without_reboot: >-
+          {{
+            true
+            if copyfail_mitigation_preflight_kernel_arg_active
+            else (
+              false
+              if copyfail_mitigation_runtime_module_is_builtin
+              else (not copyfail_mitigation_post_unload_algif_aead_module.stat.exists)
+            )
+          }}
+
+    # Make the successful no-reboot path explicit in the output.
+    - name: Report successful runtime mitigation without reboot
+      ansible.builtin.debug:
+        msg: >-
+          {{
+            'The running kernel already has the CopyFail mitigation boot '
+            ~ 'argument. Reboot is not required for immediate protection on '
+            ~ 'this host.'
+            if copyfail_mitigation_preflight_kernel_arg_active
+            else (
+              'algif_aead is builtin, but the running kernel is already booted '
+              ~ 'with the CopyFail mitigation argument. Reboot is not required '
+              ~ 'for immediate protection on this host.'
+              if copyfail_mitigation_runtime_module_is_builtin
+              else
+              'algif_aead is not loaded after the mitigation attempt. Reboot is '
+              ~ 'not required for immediate protection on this host.'
+            )
+          }}
+      when: copyfail_mitigation_runtime_protected_without_reboot
+
+    # Add the host to the dynamic no-reboot report group.
+    - name: Group hosts mitigated without reboot
+      ansible.builtin.group_by:
+        key: copyfail_report_mitigated_without_reboot
+      changed_when: false
+      when: copyfail_mitigation_runtime_protected_without_reboot
+
+    # Only reboot when the module is still loaded after the immediate unload attempt.
+    - name: Trigger reboot when the module remains loaded
+      ansible.builtin.debug:
+        msg: >-
+          {{
+            'algif_aead is builtin in the running kernel, so runtime unload '
+            ~ 'is not possible. Reboot is required to activate the CopyFail '
+            ~ 'boot-time mitigation on this host.'
+            if copyfail_mitigation_runtime_module_is_builtin
+            else
+            'algif_aead is still loaded after the unload attempt. Reboot is '
+            ~ 'required to complete the CopyFail mitigation on this host.'
+          }}
+      when: not copyfail_mitigation_runtime_protected_without_reboot
+      changed_when: true
+      notify: "{{ copyfail_mitigation_reboot_notify }}"
+
+# Rollback path: remove the persistent controls, then reboot only if the current boot still carries the kernel arg.
+- name: Roll back CopyFail mitigation
+  when: copyfail_mitigation_state == 'absent'
+  block:
+    - name: Validate operator-supplied extra modprobe paths for rollback
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              (copyfail_mitigation_absent_extra_modprobe_paths | default([]))
+              | select('search', '^/etc/modprobe\\.d/')
+              | list
+              | length
+            ) == ((copyfail_mitigation_absent_extra_modprobe_paths | default([])) | length)
+          - >-
+            (
+              (copyfail_mitigation_absent_extra_modprobe_paths | default([]))
+              | select('search', '\\.\\.')
+              | list
+              | length
+            ) == 0
+        fail_msg: >-
+          copyfail_mitigation_absent_extra_modprobe_paths must stay under /etc/modprobe.d/ with no '..'
+          (got {{ copyfail_mitigation_absent_extra_modprobe_paths | default([]) }}).
+      when: copyfail_mitigation_absent_extra_modprobe_paths | default([]) | length > 0
+
+    # Remove the runtime load block so future boots can load the module normally again.
+    - name: Remove the modprobe block file
+      ansible.builtin.file:
+        path: "{{ copyfail_mitigation_modprobe_path }}"
+        state: absent
+
+    # Use rm -f (not only file: absent) so removal matches what works on the host shell.
+    - name: Remove known CVE modprobe drop-in for algif_aead (rollback)
+      ansible.builtin.command:
+        argv:
+          - /bin/rm
+          - -f
+          - "--"
+          - "{{ copyfail_mitigation_absent_disable_algifaead_conffile_path }}"
+      when: (copyfail_mitigation_absent_remove_disable_algif_aead_conffile | default(true)) | bool
+      changed_when: false
+
+    - name: Fail if CVE modprobe drop-in still exists after removal attempt
+      ansible.builtin.stat:
+        path: "{{ copyfail_mitigation_absent_disable_algifaead_conffile_path }}"
+      register: copyfail_mitigation_absent_cve_conffile_stat
+      when: (copyfail_mitigation_absent_remove_disable_algif_aead_conffile | default(true)) | bool
+
+    - name: Assert CVE modprobe drop-in was removed (rollback)
+      ansible.builtin.assert:
+        that:
+          - not copyfail_mitigation_absent_cve_conffile_stat.stat.exists
+        fail_msg: >-
+          Rollback could not remove {{ copyfail_mitigation_absent_disable_algifaead_conffile_path }}
+          (still on disk). Run with become/root, fix permissions, or set
+          copyfail_mitigation_absent_remove_disable_algif_aead_conffile false only if you intend to keep it.
+      when:
+        - (copyfail_mitigation_absent_remove_disable_algif_aead_conffile | default(true)) | bool
+        - not (copyfail_mitigation_absent_cve_conffile_stat.skipped | default(false) | bool)
+
+    - name: Remove additional modprobe.d files during rollback (operator list)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ copyfail_mitigation_absent_extra_modprobe_paths | default([]) }}"
+      when: copyfail_mitigation_absent_extra_modprobe_paths | default([]) | length > 0
+
+    # Remove the vendor mitigation argument from all installed kernels.
+    - name: Remove CopyFail mitigation boot argument (bootloader-specific)
+      ansible.builtin.include_tasks:
+        file: "{{ role_path }}/tasks/bootloader_apply_absent.yml"
+
+    # Only this role's drop-in was removed; other /etc/modprobe.d/*.conf files can still block algif_aead.
+    - name: Dry-run modprobe after rollback files removed (detect foreign modprobe.d rules)
+      ansible.builtin.command:
+        argv:
+          - modprobe
+          - -n
+          - -v
+          - algif_aead
+      register: copyfail_mitigation_post_rollback_modprobe_dry
+      changed_when: false
+      failed_when: false
+
+    - name: Warn when algif_aead is still blocked by another modprobe.d snippet
+      ansible.builtin.debug:
+        msg: >-
+          CopyFail rollback removed this role's file ({{ copyfail_mitigation_modprobe_path }})
+          and cleaned bootloader settings, but modprobe -n -v algif_aead still shows a block
+          (install-to-/bin/false or blacklist). Another conf under /etc/modprobe.d/ is likely
+          still active — e.g. Ubuntu CVE tooling may ship disable-algif_aead.conf. Remove or
+          edit that file if the module should load.
+      when:
+        - not (copyfail_mitigation_post_rollback_modprobe_dry.skipped | default(false) | bool)
+        - >-
+          (
+            (
+              (copyfail_mitigation_post_rollback_modprobe_dry.stdout | default(''))
+              ~ (copyfail_mitigation_post_rollback_modprobe_dry.stderr | default(''))
+            ) is search('(?i)install\\s+algif_aead\\s+/bin/false')
+          )
+          or (
+            (
+              (copyfail_mitigation_post_rollback_modprobe_dry.stdout | default(''))
+              ~ (copyfail_mitigation_post_rollback_modprobe_dry.stderr | default(''))
+            ) is search('(?i)blacklist\\s+algif_aead\\b')
+          )
+
+    # If the current boot still uses the old kernel arg, reboot is needed to finish rollback.
+    - name: Trigger reboot when the running kernel still has the mitigation argument
+      ansible.builtin.debug:
+        msg: >-
+          The running kernel still has the CopyFail mitigation boot
+          argument active. Reboot is required to complete rollback.
+      when: copyfail_mitigation_preflight_kernel_arg_active
+      changed_when: true
+      notify: "{{ copyfail_mitigation_reboot_notify }}"
+
+    # Running kernel has no mitigation arg: either nothing to remove (already clean) or persistence
+    # was cleared and no reboot is required. Split so summaries are not misleading.
+    - name: Group hosts where rollback found nothing to remove (already clean)
+      ansible.builtin.group_by:
+        key: copyfail_report_rollback_noop_target_clean
+      changed_when: false
+      when:
+        - not copyfail_mitigation_preflight_kernel_arg_active
+        - not copyfail_mitigation_preflight_modprobe_block_present
+        - not copyfail_mitigation_present_on_any_kernel
+
+    - name: Group hosts rolled back without reboot (persistence was removed)
+      ansible.builtin.group_by:
+        key: copyfail_report_rolled_back_without_reboot
+      changed_when: false
+      when:
+        - not copyfail_mitigation_preflight_kernel_arg_active
+        - >-
+          copyfail_mitigation_preflight_modprobe_block_present
+          or copyfail_mitigation_present_on_any_kernel

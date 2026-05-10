@@ -1,0 +1,68 @@
+---
+# Mirrors NVD CPE linux:linux_kernel ranges for CVE-2026-31431 (upstream stable numbering).
+# https://nvd.nist.gov/vuln/detail/CVE-2026-31431 — compare to the leading release parsed from ansible_facts['kernel'].
+# Heuristic: RHEL/SUSE backports can disagree with upstream; see role README.
+- name: Parse running kernel release for NVD upstream comparison
+  ansible.builtin.set_fact:
+    copyfail_mitigation_kernel_release_for_nvd: "{{ ansible_facts['kernel'] | regex_replace('^([0-9]+\\.[0-9]+(?:\\.[0-9]+)?).*$', '\\1') }}"
+
+- name: Record whether parsed kernel release is usable for NVD version compares
+  ansible.builtin.set_fact:
+    copyfail_mitigation_kernel_nvd_release_parse_ok: >-
+      {{
+        (copyfail_mitigation_kernel_release_for_nvd | length > 0)
+        and (
+          copyfail_mitigation_kernel_release_for_nvd
+          is match('^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$')
+        )
+      }}
+
+- name: Warn when NVD gating is on but kernel release did not parse to a numeric triplet
+  ansible.builtin.debug:
+    msg: >-
+      CopyFail NVD: kernel fact {{ ansible_facts['kernel'] }} parsed to
+      '{{ copyfail_mitigation_kernel_release_for_nvd }}' which is not a clean N.N[.N]
+      triplet; treating the host as within the NVD check (present mitigation will
+      apply — fail-closed).
+  when:
+    - copyfail_mitigation_nvd_upstream_vulnerable_check | bool
+    - not (copyfail_mitigation_kernel_nvd_release_parse_ok | bool)
+
+# Version bands mirror NVD linux:linux_kernel CPE at integration time — re-check NVD when CVE ranges change.
+- name: Decide whether running kernel falls in NVD vulnerable upstream ranges (CVE-2026-31431)
+  ansible.builtin.set_fact:
+    copyfail_mitigation_kernel_nvd_vulnerable: >-
+      {{
+        (not (copyfail_mitigation_nvd_upstream_vulnerable_check | bool))
+        or (not (copyfail_mitigation_kernel_nvd_release_parse_ok | bool))
+        or (
+          (
+            (copyfail_mitigation_kernel_release_for_nvd is version('4.14', '>='))
+            and (copyfail_mitigation_kernel_release_for_nvd is version('5.10.254', '<'))
+          )
+          or (
+            (copyfail_mitigation_kernel_release_for_nvd is version('5.11', '>='))
+            and (copyfail_mitigation_kernel_release_for_nvd is version('5.15.204', '<'))
+          )
+          or (
+            (copyfail_mitigation_kernel_release_for_nvd is version('5.16', '>='))
+            and (copyfail_mitigation_kernel_release_for_nvd is version('6.1.170', '<'))
+          )
+          or (
+            (copyfail_mitigation_kernel_release_for_nvd is version('6.2', '>='))
+            and (copyfail_mitigation_kernel_release_for_nvd is version('6.6.137', '<'))
+          )
+          or (
+            (copyfail_mitigation_kernel_release_for_nvd is version('6.7', '>='))
+            and (copyfail_mitigation_kernel_release_for_nvd is version('6.12.85', '<'))
+          )
+          or (
+            (copyfail_mitigation_kernel_release_for_nvd is version('6.13', '>='))
+            and (copyfail_mitigation_kernel_release_for_nvd is version('6.18.22', '<'))
+          )
+          or (
+            (copyfail_mitigation_kernel_release_for_nvd is version('6.19', '>='))
+            and (copyfail_mitigation_kernel_release_for_nvd is version('6.19.12', '<'))
+          )
+        )
+      }}

@@ -1,0 +1,20 @@
+---
+# Minimal local play: use `ansible-playbook ... --syntax-check` only unless you
+# intend to run grubby/modprobe on the target (do not run a full apply against
+# localhost unless it is a real RHEL test VM). Facts below exercise the Red Hat
+# path only; Debian/SUSE/Jinja paths are covered by the same syntax parse—use a
+# VM or Molecule scenario to execute GRUB/update-grub paths end-to-end.
+- name: Smoke check CopyFail role syntax
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ansible_facts:
+      os_family: RedHat
+      distribution: RedHat
+      distribution_major_version: "8"
+      virtualization_role: guest
+      # Parsed for NVD gating; use a vulnerable-band example so syntax-check paths stay coherent.
+      kernel: "5.14.0-503.el8.x86_64"
+  roles:
+    - role: copyfail_mitigation

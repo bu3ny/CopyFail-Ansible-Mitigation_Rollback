@@ -1,0 +1,14 @@
+---
+# Syntax-check only unless you intend to mutate modprobe on the target.
+- name: Smoke check Dirty Frag role syntax
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ansible_facts:
+      os_family: RedHat
+      distribution: RedHat
+      distribution_major_version: "8"
+      virtualization_role: guest
+  roles:
+    - role: dirtyfrag_mitigation

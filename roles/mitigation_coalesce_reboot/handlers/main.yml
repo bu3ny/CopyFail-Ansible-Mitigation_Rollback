@@ -1,0 +1,21 @@
+---
+# List role mitigation_coalesce_reboot *before* copyfail_mitigation / dirtyfrag_mitigation so this
+# handler runs first when mitigation_coalesce_reboot is true (single reboot for both).
+- name: Single reboot for combined mitigations (CopyFail + Dirty Frag)
+  listen: Mitigation reboot coalesced
+  ansible.builtin.reboot:
+    msg: "{{ mitigation_coalesced_reboot_message | default('Reboot: combined CopyFail and Dirty Frag mitigations') }}"
+    reboot_timeout: >-
+      {{
+        mitigation_coalesced_reboot_timeout | default(
+          [
+            hostvars[inventory_hostname].get('copyfail_mitigation_reboot_timeout', 300) | int,
+            hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_timeout', 300) | int,
+          ] | max,
+          true,
+        )
+      }}
+  when:
+    - mitigation_coalesce_reboot | default(false)
+    - (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+    - (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)

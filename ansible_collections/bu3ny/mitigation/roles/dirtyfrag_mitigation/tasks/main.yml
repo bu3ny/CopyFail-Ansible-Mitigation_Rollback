@@ -1,0 +1,134 @@
+---
+- name: Gather required facts when they are missing
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - min
+      - virtual
+      - hardware
+  when:
+    - ansible_facts['distribution'] is not defined
+      or ansible_facts['distribution_major_version'] is not defined
+
+- name: Validate requested mitigation state
+  ansible.builtin.assert:
+    that:
+      - dirtyfrag_mitigation_state in ['present', 'absent']
+    fail_msg: "dirtyfrag_mitigation_state must be either 'present' or 'absent'."
+
+- name: Resolve reboot notify topic (coalesce with CopyFail when mitigation_coalesce_reboot)
+  ansible.builtin.set_fact:
+    dirtyfrag_mitigation_reboot_notify: >-
+      {{ 'Mitigation reboot coalesced' if mitigation_coalesce_reboot | default(false) else 'Dirty Frag reboot required' }}
+
+- name: Dirty Frag role revision
+  ansible.builtin.debug:
+    msg: "dirtyfrag_mitigation role revision {{ dirtyfrag_mitigation_role_revision }}"
+    verbosity: 1
+
+- name: Determine whether this host is supported for Dirty Frag mitigation
+  ansible.builtin.set_fact:
+    dirtyfrag_mitigation_supported_host: >-
+      {{
+        (
+          ansible_facts['os_family'] == 'RedHat'
+          and ansible_facts['distribution'] in dirtyfrag_mitigation_supported_redhat_like_distributions
+          and (
+            ansible_facts['distribution'] != 'RedHat'
+            or (ansible_facts['distribution_major_version'] | int) in dirtyfrag_mitigation_supported_rhel_major_versions
+          )
+        )
+        or (
+          ansible_facts['os_family'] == 'Debian'
+          and ansible_facts['distribution'] in dirtyfrag_mitigation_supported_debian_like_distributions
+        )
+        or (
+          ansible_facts['os_family'] == 'Suse'
+          and ansible_facts['distribution'] in dirtyfrag_mitigation_supported_suse_distributions
+        )
+      }}
+
+- name: Determine reboot wait timeout for this host
+  ansible.builtin.set_fact:
+    dirtyfrag_mitigation_reboot_timeout: >-
+      {{
+        dirtyfrag_mitigation_virtual_reboot_timeout
+        if ansible_facts['virtualization_role'] | default('NA') == 'guest'
+        else dirtyfrag_mitigation_physical_reboot_timeout
+      }}
+  when: dirtyfrag_mitigation_supported_host
+
+- name: Determine effective reboot policy for this host
+  ansible.builtin.set_fact:
+    dirtyfrag_mitigation_reboot_allowed: >-
+      {{
+        false
+        if dirtyfrag_mitigation_manual_reboot_group in group_names
+        else (
+          true
+          if dirtyfrag_mitigation_reboot_allowed_group in group_names
+          else (dirtyfrag_mitigation_reboot | bool)
+        )
+      }}
+  when: dirtyfrag_mitigation_supported_host
+
+- name: Skip unsupported hosts
+  ansible.builtin.debug:
+    msg: >-
+      Skipping Dirty Frag mitigation: {{ ansible_facts['distribution'] | default('unknown') }}
+      {{ ansible_facts['distribution_version'] | default('') }} is not in this role's supported matrix.
+  when: not dirtyfrag_mitigation_supported_host
+
+- name: Manage Dirty Frag mitigation on supported hosts
+  when: dirtyfrag_mitigation_supported_host
+  block:
+    - name: Run modprobe / sysctl mitigation tasks
+      ansible.builtin.include_tasks:
+        file: "{{ role_path }}/tasks/core.yml"
+
+    - name: Flush handlers so reboot and verification complete within the role
+      ansible.builtin.meta: flush_handlers
+      when: not (mitigation_coalesce_reboot | default(false))
+
+- name: Show Dirty Frag role summary
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        {
+          'summary_type': 'mitigation',
+          'mitigated_without_reboot': groups['dirtyfrag_report_mitigated_without_reboot'] | default([]),
+          'rebooted_and_mitigated': groups['dirtyfrag_report_rebooted_mitigated'] | default([]),
+          'manual_reboot_required': groups['dirtyfrag_report_manual_reboot_required'] | default([]),
+        }
+        if dirtyfrag_mitigation_state == 'present'
+        else
+        {
+          'summary_type': 'rollback',
+          'rolled_back_without_reboot': groups['dirtyfrag_report_rolled_back_without_reboot'] | default([]),
+          'rebooted_and_rolled_back': groups['dirtyfrag_report_rebooted_and_rolled_back'] | default([]),
+          'rollback_noop': groups['dirtyfrag_report_rollback_noop_target_clean'] | default([]),
+          'manual_rollback_reboot_required': groups['dirtyfrag_report_manual_rollback_reboot_required'] | default([]),
+        }
+      }}
+  run_once: true
+  delegate_to: localhost
+  when:
+    - ansible_play_hosts | length > 0
+    - >-
+      (
+        ansible_play_hosts
+        | map('extract', hostvars, 'dirtyfrag_mitigation_supported_host')
+        | select('defined')
+        | map('bool')
+        | list
+        | length
+      ) > 0
+    - >-
+      (
+        ansible_play_hosts
+        | map('extract', hostvars, 'dirtyfrag_mitigation_supported_host')
+        | select('defined')
+        | map('bool')
+        | list
+        | max
+      )

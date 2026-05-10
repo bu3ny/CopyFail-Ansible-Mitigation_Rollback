@@ -1,0 +1,51 @@
+---
+dirtyfrag_mitigation_role_revision: "2026.05.10+rollback-reboot"
+# With copyfail_mitigation: set true on the play and use mitigation_coalesce_reboot role + post_tasks flush_handlers.
+mitigation_coalesce_reboot: false
+# After rollback + reboot, modprobe -n -v must not show install esp4/esp6/rxrpc → /bin/false (or blacklist) from policy.
+dirtyfrag_mitigation_verify_modprobe_policy_after_rollback: true
+dirtyfrag_mitigation_state: present
+dirtyfrag_mitigation_reboot: true
+dirtyfrag_mitigation_virtual_reboot_timeout: 300
+dirtyfrag_mitigation_physical_reboot_timeout: 1800
+dirtyfrag_mitigation_reboot_message: "Reboot initiated by the Dirty Frag mitigation role"
+dirtyfrag_mitigation_reboot_allowed_group: dirtyfrag_safe_to_reboot
+dirtyfrag_mitigation_manual_reboot_group: dirtyfrag_manual_reboot
+dirtyfrag_mitigation_modprobe_path: /etc/modprobe.d/dirtyfrag-mitigation.conf
+# Optional Red Hat-style partial mitigation (ESP path only); breaks rootless containers / some sandboxes.
+# Ignored when /proc/sys/user/max_user_namespaces does not exist (typical EL6).
+dirtyfrag_mitigation_unprivileged_userns_sysctl: false
+dirtyfrag_mitigation_sysctl_dropin_path: /etc/sysctl.d/99-dirtyfrag-mitigation-userns.conf
+dirtyfrag_mitigation_modules:
+  - esp4
+  - esp6
+  - rxrpc
+# Major releases when ansible_facts['distribution'] == 'RedHat' (other Red Hat-like distros skip this filter).
+# Includes 6 and 7 because Dirty Frag / Copy.Fail2 family issues affect older EL kernels per vendor advisories.
+dirtyfrag_mitigation_supported_rhel_major_versions:
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+dirtyfrag_mitigation_supported_redhat_like_distributions:
+  - RedHat
+  - CentOS
+  - CentOS Stream
+  - Fedora
+  - Rocky
+  - AlmaLinux
+  - OracleLinux
+  - Amazon
+  - Scientific
+  - Scientific Linux
+dirtyfrag_mitigation_supported_debian_like_distributions:
+  - Debian
+  - Ubuntu
+  - Linuxmint
+  - Kali
+  - "Pop!_OS"
+dirtyfrag_mitigation_supported_suse_distributions:
+  - SLES
+  - openSUSE Leap
+  - openSUSE Tumbleweed

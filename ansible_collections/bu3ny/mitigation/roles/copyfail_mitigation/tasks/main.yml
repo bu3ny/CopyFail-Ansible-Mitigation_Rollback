@@ -1,0 +1,182 @@
+---
+# Gather only the facts this role needs when the caller disables global fact collection.
+- name: Gather required facts when they are missing
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - min
+      - virtual
+      - hardware
+  when:
+    - ansible_facts['distribution'] is not defined
+      or ansible_facts['distribution_major_version'] is not defined
+      or ansible_facts['kernel'] is not defined
+
+# Fail early on unsupported state values so execution stays predictable.
+- name: Validate requested mitigation state
+  ansible.builtin.assert:
+    that:
+      - copyfail_mitigation_state in ['present', 'absent']
+    fail_msg: "copyfail_mitigation_state must be either 'present' or 'absent'."
+
+- name: Resolve reboot notify topic (coalesce with Dirty Frag when mitigation_coalesce_reboot)
+  ansible.builtin.set_fact:
+    copyfail_mitigation_reboot_notify: >-
+      {{ 'Mitigation reboot coalesced' if mitigation_coalesce_reboot | default(false) else 'CopyFail reboot required' }}
+
+# Shown only with -v / higher verbosity. If `included:` paths in the log point elsewhere, Ansible is using another role copy.
+- name: CopyFail role revision
+  ansible.builtin.debug:
+    msg: "copyfail_mitigation role revision {{ copyfail_mitigation_role_revision }}"
+    verbosity: 1
+
+- name: Determine whether this host is supported for CopyFail mitigation
+  ansible.builtin.set_fact:
+    copyfail_mitigation_supported_host: >-
+      {{
+        (
+          ansible_facts['os_family'] == 'RedHat'
+          and ansible_facts['distribution'] in copyfail_mitigation_supported_redhat_like_distributions
+          and (
+            ansible_facts['distribution'] != 'RedHat'
+            or (ansible_facts['distribution_major_version'] | int) in copyfail_mitigation_supported_rhel_major_versions
+          )
+        )
+        or (
+          ansible_facts['os_family'] == 'Debian'
+          and ansible_facts['distribution'] in copyfail_mitigation_supported_debian_like_distributions
+        )
+        or (
+          ansible_facts['os_family'] == 'Suse'
+          and ansible_facts['distribution'] in copyfail_mitigation_supported_suse_distributions
+        )
+      }}
+
+- name: Determine reboot wait timeout for this host
+  ansible.builtin.set_fact:
+    copyfail_mitigation_reboot_timeout: >-
+      {{
+        copyfail_mitigation_virtual_reboot_timeout
+        if ansible_facts['virtualization_role'] | default('NA') == 'guest'
+        else copyfail_mitigation_physical_reboot_timeout
+      }}
+  when: copyfail_mitigation_supported_host
+
+# Allow inventory groups to override the global reboot default on a per-host basis.
+- name: Determine effective reboot policy for this host
+  ansible.builtin.set_fact:
+    copyfail_mitigation_reboot_allowed: >-
+      {{
+        false
+        if copyfail_mitigation_manual_reboot_group in group_names
+        else (
+          true
+          if copyfail_mitigation_reboot_allowed_group in group_names
+          else (copyfail_mitigation_reboot | bool)
+        )
+      }}
+  when: copyfail_mitigation_supported_host
+
+# Exit cleanly on non-target systems instead of failing or mutating anything.
+- name: Skip unsupported hosts
+  ansible.builtin.debug:
+    msg: >-
+      Skipping CopyFail mitigation: {{ ansible_facts['distribution'] | default('unknown') }}
+      {{ ansible_facts['distribution_version'] | default('') }} is not in this role's
+      supported matrix (Red Hat-like, Debian-like, or SUSE — see defaults/main.yml).
+  when: not copyfail_mitigation_supported_host
+
+# Everything below is the actual mitigation workflow for supported hosts.
+- name: Manage CopyFail mitigation on supported hosts
+  when: copyfail_mitigation_supported_host
+  block:
+    - name: Map OS family to bootloader implementation
+      ansible.builtin.include_tasks:
+        file: "{{ role_path }}/tasks/set_bootloader_backend.yml"
+
+    - name: Evaluate NVD upstream kernel exposure (CVE-2026-31431)
+      ansible.builtin.include_tasks:
+        file: "{{ role_path }}/tasks/nvd_kernel_gate.yml"
+
+    - name: Skip present mitigation — kernel outside NVD upstream vulnerable ranges
+      when:
+        - copyfail_mitigation_state == 'present'
+        - copyfail_mitigation_nvd_upstream_vulnerable_check | bool
+        - not (copyfail_mitigation_kernel_nvd_vulnerable | bool)
+      block:
+        - name: Report NVD skip for present mitigation
+          ansible.builtin.debug:
+            msg: >-
+              Skipping CopyFail present mitigation: parsed kernel release
+              {{ copyfail_mitigation_kernel_release_for_nvd }} (from kernel={{ ansible_facts['kernel'] | default('unknown') }})
+              is outside NVD CVE-2026-31431 vulnerable linux:linux_kernel bands.
+              Re-runs after a fixed upstream-equivalent kernel stay no-op without reboot.
+        - name: Group hosts skipped for present (kernel not NVD-vulnerable)
+          ansible.builtin.group_by:
+            key: copyfail_report_nvd_skipped_kernel_not_vulnerable
+          changed_when: false
+
+    - name: Run grubby / modprobe mitigation and rollback tasks
+      ansible.builtin.include_tasks:
+        file: "{{ role_path }}/tasks/core.yml"
+      when: >-
+        (copyfail_mitigation_state == 'absent')
+        or (
+          copyfail_mitigation_state == 'present'
+          and (
+            not (copyfail_mitigation_nvd_upstream_vulnerable_check | bool)
+            or (copyfail_mitigation_kernel_nvd_vulnerable | bool)
+          )
+        )
+
+    - name: Flush handlers so reboot and verification complete within the role
+      ansible.builtin.meta: flush_handlers
+      when: not (mitigation_coalesce_reboot | default(false))
+
+# Compact end-of-run summary (skipped when no play host is supported for this role).
+# The payload shape intentionally changes with `copyfail_mitigation_state` so apply
+# and rollback runs report operator-facing outcomes with state-specific field names.
+# Second when clause: any supported host in the play; select('defined') drops hosts that never set the fact.
+- name: Show CopyFail role summary
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        {
+          'summary_type': 'mitigation',
+          'protected_without_reboot': groups['copyfail_report_mitigated_without_reboot'] | default([]),
+          'rebooted_and_mitigated': groups['copyfail_report_rebooted_mitigated'] | default([]),
+          'manual_mitigation_reboot_required': groups['copyfail_report_manual_reboot_required'] | default([]),
+          'nvd_skipped_kernel_not_vulnerable': groups['copyfail_report_nvd_skipped_kernel_not_vulnerable'] | default([])
+        }
+        if copyfail_mitigation_state == 'present'
+        else
+        {
+          'summary_type': 'rollback',
+          'rollback_noop_target_clean': groups['copyfail_report_rollback_noop_target_clean'] | default([]),
+          'rolled_back_without_reboot': groups['copyfail_report_rolled_back_without_reboot'] | default([]),
+          'rebooted_and_rolled_back': groups['copyfail_report_rebooted_and_rolled_back'] | default([]),
+          'manual_rollback_reboot_required': groups['copyfail_report_manual_rollback_reboot_required'] | default([])
+        }
+      }}
+  run_once: true
+  delegate_to: localhost
+  when:
+    - ansible_play_hosts | length > 0
+    - >-
+      (
+        ansible_play_hosts
+        | map('extract', hostvars, 'copyfail_mitigation_supported_host')
+        | select('defined')
+        | map('bool')
+        | list
+        | length
+      ) > 0
+    - >-
+      (
+        ansible_play_hosts
+        | map('extract', hostvars, 'copyfail_mitigation_supported_host')
+        | select('defined')
+        | map('bool')
+        | list
+        | max
+      )

@@ -1,0 +1,32 @@
+---
+namespace: bu3ny
+name: mitigation
+version: 1.0.5
+readme: README.md
+authors:
+  - Moustafa Harbi <mharbi@redhat.com>
+description: >-
+  Ansible collection for CopyFail (CVE-2026-31431) and Dirty Frag / Copy.Fail2
+  (CVE-2026-43284, CVE-2026-43500) Linux mitigations: bootloader, modprobe.d,
+  and optional coalesced reboot across both roles.
+license:
+  - GPL-3.0-only
+tags:
+  - copyfail
+  - dirtyfrag
+  - cve_2026_31431
+  - cve_2026_43284
+  - cve_2026_43500
+  - security
+  - mitigation
+  - linux
+  - grub
+  - modprobe
+repository: https://galaxy.ansible.com/ui/namespaces/bu3ny/
+documentation: https://galaxy.ansible.com/ui/namespaces/bu3ny/
+homepage: https://galaxy.ansible.com/ui/namespaces/bu3ny/
+issues: https://galaxy.ansible.com/ui/namespaces/bu3ny/
+build_ignore:
+  - "*.tar.gz"
+  - .git
+  - __pycache__

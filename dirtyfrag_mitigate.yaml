@@ -1,0 +1,10 @@
+---
+# Pair: dirtyfrag_rollback.yaml — see README “Repository playbooks” for all six entry points.
+- name: Apply Dirty Frag (Copy.Fail2) modprobe mitigation
+  hosts: all
+  gather_facts: false
+  become: true
+  roles:
+    - role: dirtyfrag_mitigation
+      vars:
+        dirtyfrag_mitigation_state: present

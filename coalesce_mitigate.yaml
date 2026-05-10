@@ -1,0 +1,19 @@
+---
+# CopyFail + Dirty Frag in one play, one reboot. Pair: coalesce_rollback.yaml.
+# See README “Repository playbooks” for single-role entry points.
+# Single reboot: list mitigation_coalesce_reboot first, set mitigation_coalesce_reboot: true,
+# then flush handlers once after both roles.
+- name: Apply CopyFail and Dirty Frag mitigations (coalesced reboot)
+  hosts: all
+  gather_facts: false
+  become: true
+  vars:
+    mitigation_coalesce_reboot: true
+  roles:
+    - role: mitigation_coalesce_reboot
+    - role: copyfail_mitigation
+    - role: dirtyfrag_mitigation
+  post_tasks:
+    - name: Flush reboot and verification handlers once for both roles
+      ansible.builtin.meta: flush_handlers
+      when: mitigation_coalesce_reboot | default(false)

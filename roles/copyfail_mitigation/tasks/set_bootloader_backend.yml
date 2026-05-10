@@ -1,0 +1,24 @@
+---
+# grubby: Red Hat family (RHEL, CentOS, Fedora, Amazon Linux, Alma, Rocky, Oracle, Scientific, …)
+# debian: GRUB_CMDLINE_LINUX_DEFAULT in /etc/default/grub + update-grub (Ubuntu, Debian)
+# suse:   same default file + grub2-mkconfig (SLES, openSUSE)
+- name: Select bootloader backend for this host
+  ansible.builtin.set_fact:
+    copyfail_mitigation_bootloader_backend: >-
+      {{
+        'grubby'
+        if ansible_facts['os_family'] == 'RedHat'
+        else (
+          'debian'
+          if ansible_facts['os_family'] == 'Debian'
+          else 'suse'
+        )
+      }}
+
+- name: Assert bootloader backend is mapped for this OS family
+  ansible.builtin.assert:
+    that:
+      - copyfail_mitigation_bootloader_backend in ['grubby', 'debian', 'suse']
+    fail_msg: >-
+      Unsupported ansible_facts['os_family']={{ ansible_facts['os_family'] | default('unknown') }}
+      for bootloader mapping (expected RedHat, Debian, or Suse).

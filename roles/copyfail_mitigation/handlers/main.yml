@@ -1,0 +1,283 @@
+---
+# Reboot only when the caller allows it; the handler waits for the host to come back.
+- name: Reboot for CopyFail mitigation
+  listen: CopyFail reboot required
+  ansible.builtin.reboot:
+    msg: "{{ copyfail_mitigation_reboot_message }}"
+    reboot_timeout: "{{ copyfail_mitigation_reboot_timeout }}"
+  when:
+    - copyfail_mitigation_reboot_allowed | bool
+    - not (mitigation_coalesce_reboot | default(false))
+
+# Post-reboot verification uses two independent signals (see assert tasks below):
+#   1) /proc/cmdline — boot-time mitigation (e.g. initcall_blacklist=…).
+#   2) modprobe -n -v algif_aead — effective modprobe.d / install / blacklist policy (realistic load path).
+- name: Read runtime kernel command line after reboot
+  listen:
+    - CopyFail reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.command:
+    argv:
+      - cat
+      - /proc/cmdline
+  register: copyfail_mitigation_post_reboot_cmdline
+  changed_when: false
+  when:
+    - copyfail_mitigation_reboot_allowed | bool
+    # Coalesced reboot runs only when BOTH roles allow auto-reboot; skip post-reboot checks if no reboot ran.
+    - >-
+      (not (mitigation_coalesce_reboot | default(false)))
+      or (
+        (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+        and (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+      )
+
+# Rollback: cmdline can be clean while modprobe.d still blocks algif_aead (e.g. foreign install rules).
+# Present: modprobe dry-run reflects how the module would be resolved (install /bin/false, builtin, or quiet kmod).
+- name: Dry-run modprobe resolution for algif_aead after reboot (modprobe policy check)
+  listen:
+    - CopyFail reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.command:
+    argv:
+      - modprobe
+      - -n
+      - -v
+      - algif_aead
+  register: copyfail_mitigation_post_reboot_modprobe_dry_algifaead
+  changed_when: false
+  failed_when: false
+  when:
+    - copyfail_mitigation_reboot_allowed | bool
+    - (copyfail_mitigation_state == 'present') or ((copyfail_mitigation_state == 'absent') and (copyfail_mitigation_verify_modprobe_policy_after_rollback | bool))
+    - >-
+      (not (mitigation_coalesce_reboot | default(false)))
+      or (
+        (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+        and (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+      )
+
+# Present: require (1) mitigation on the booted cmdline and (2) modprobe policy consistent with a disabled algif_aead.
+- name: Verify CopyFail mitigation after reboot
+  listen:
+    - CopyFail reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.assert:
+    that:
+      - copyfail_mitigation_post_reboot_cmdline.stdout is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)')
+      - >-
+        not (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.skipped | default(false) | bool)
+        and (
+          (
+            (
+              (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.stdout | default(''))
+              ~ (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.stderr | default(''))
+            ) is search('(?i)install\\s+algif_aead\\s+/bin/false')
+          )
+          or (
+            (
+              (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.stdout | default(''))
+              ~ (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.stderr | default(''))
+            ) is search('(?i)algif_aead.{0,200}is\\s+builtin|is\\s+builtin.{0,200}algif_aead')
+          )
+          or (
+            (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.rc | default(-1)) == 0
+            and (
+              (
+                (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.stdout | default(''))
+                ~ (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.stderr | default(''))
+              ) | length == 0
+            )
+          )
+        )
+    fail_msg: >-
+      CopyFail mitigation verification failed after reboot. Use two gates: (1) boot
+      cmdline must include {{ copyfail_mitigation_kernel_arg }}; (2) modprobe -n -v
+      algif_aead must reflect disabled policy (install-to-/bin/false line, algif_aead-related builtin text,
+      or on some kmod builds exit 0 with empty stdout/stderr). Cmdline has arg:
+      {{ copyfail_mitigation_post_reboot_cmdline.stdout is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)') }}.
+      modprobe dry-run skipped:
+      {{ copyfail_mitigation_post_reboot_modprobe_dry_algifaead.skipped | default(false) }},
+      rc={{ copyfail_mitigation_post_reboot_modprobe_dry_algifaead.rc | default('n/a') }}.
+      modprobe -n -v stdout+stderr (first 2k):
+      {{
+        (
+          (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.stdout | default(''))
+          ~ (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.stderr | default(''))
+        ) | truncate(2048, true, '...')
+      }}.
+    success_msg: >-
+      CopyFail mitigation verified after reboot: boot cmdline carries the mitigation
+      argument and modprobe dry-run matches expected disabled policy for algif_aead.
+  when:
+    - copyfail_mitigation_reboot_allowed | bool
+    - copyfail_mitigation_state == 'present'
+    - >-
+      (not (mitigation_coalesce_reboot | default(false)))
+      or (
+        (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+        and (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+      )
+
+# Add rebooted mitigation hosts to a dynamic summary group.
+- name: Group rebooted mitigation hosts
+  listen:
+    - CopyFail reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.group_by:
+    key: copyfail_report_rebooted_mitigated
+  changed_when: false
+  when:
+    - copyfail_mitigation_reboot_allowed | bool
+    - copyfail_mitigation_state == 'present'
+    - >-
+      (not (mitigation_coalesce_reboot | default(false)))
+      or (
+        (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+        and (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+      )
+
+# Rollback: (1) mitigation gone from booted cmdline; (2) optional modprobe gate — no install-to-/bin/false or blacklist algif_aead.
+- name: Verify CopyFail rollback after reboot
+  listen:
+    - CopyFail reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.assert:
+    that:
+      - not (copyfail_mitigation_post_reboot_cmdline.stdout is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)'))
+      - >-
+        not (copyfail_mitigation_verify_modprobe_policy_after_rollback | bool)
+        or (
+          not (
+            (
+              (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.stdout | default(''))
+              ~ (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.stderr | default(''))
+            ) is search('(?i)install\\s+algif_aead\\s+/bin/false')
+          )
+          and not (
+            (
+              (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.stdout | default(''))
+              ~ (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.stderr | default(''))
+            ) is search('(?i)blacklist\\s+algif_aead\\b')
+          )
+        )
+    fail_msg: >-
+      CopyFail rollback verification failed after reboot. Gate (1): boot cmdline
+      must not include {{ copyfail_mitigation_kernel_arg }}. Gate (2), when
+      copyfail_mitigation_verify_modprobe_policy_after_rollback is true: modprobe -n -v
+      must not show install algif_aead routed to /bin/false or blacklist algif_aead. Cmdline still has arg:
+      {{ copyfail_mitigation_post_reboot_cmdline.stdout is search('(^| )' ~ (copyfail_mitigation_kernel_arg | regex_escape) ~ '( |$)') }}.
+      modprobe -n -v stdout+stderr (first 2k):
+      {{
+        (
+          (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.stdout | default(''))
+          ~ (copyfail_mitigation_post_reboot_modprobe_dry_algifaead.stderr | default(''))
+        ) | truncate(2048, true, '...')
+      }}.
+    success_msg: >-
+      CopyFail rollback verified after reboot: mitigation gone from boot cmdline
+      and (when enabled) modprobe dry-run shows no install-to-/bin/false or blacklist for algif_aead.
+  when:
+    - copyfail_mitigation_reboot_allowed | bool
+    - copyfail_mitigation_state == 'absent'
+    - >-
+      (not (mitigation_coalesce_reboot | default(false)))
+      or (
+        (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+        and (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+      )
+
+# Add successful rollback reboots to a dynamic summary group.
+- name: Group rebooted rollback hosts
+  listen:
+    - CopyFail reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.group_by:
+    key: copyfail_report_rebooted_and_rolled_back
+  changed_when: false
+  when:
+    - copyfail_mitigation_reboot_allowed | bool
+    - copyfail_mitigation_state == 'absent'
+    - >-
+      (not (mitigation_coalesce_reboot | default(false)))
+      or (
+        (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+        and (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+      )
+
+# If reboot is disabled, leave a clear operator reminder that runtime state has not changed yet.
+- name: Report pending reboot for CopyFail mitigation
+  listen:
+    - CopyFail reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        'CopyFail rollback still needs a reboot on this host because the running '
+        ~ 'kernel still has the mitigation boot argument, but reboot is disabled '
+        ~ 'by configuration.'
+        if copyfail_mitigation_state == 'absent'
+        else
+        'CopyFail mitigation still needs a reboot on this host to finish convergence, '
+        ~ 'but reboot is disabled by configuration.'
+      }}
+  when: not copyfail_mitigation_reboot_allowed | bool
+
+# Add pending reboot hosts to a dynamic summary group.
+- name: Group hosts requiring manual reboot
+  listen:
+    - CopyFail reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.group_by:
+    key: copyfail_report_manual_reboot_required
+  changed_when: false
+  when:
+    - not copyfail_mitigation_reboot_allowed | bool
+    - copyfail_mitigation_state == 'present'
+
+# Rollback with reboot disabled still needs a reboot when cmdline carries the arg; track for summaries.
+- name: Group hosts pending rollback reboot
+  listen:
+    - CopyFail reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.group_by:
+    key: copyfail_report_manual_rollback_reboot_required
+  changed_when: false
+  when:
+    - not copyfail_mitigation_reboot_allowed | bool
+    - copyfail_mitigation_state == 'absent'
+
+# Coalesced reboot is skipped unless Dirty Frag also allows auto-reboot on this host.
+- name: Report CopyFail coalesce blocked (Dirty Frag disallows auto-reboot)
+  listen: Mitigation reboot coalesced
+  ansible.builtin.debug:
+    msg: >-
+      CopyFail changes are staged but no coalesced reboot ran because Dirty Frag
+      disallows auto-reboot on this host (dirtyfrag_mitigation_reboot_allowed=false).
+      Reboot manually to finish CopyFail convergence, or align reboot policy for both roles.
+  when:
+    - mitigation_coalesce_reboot | default(false)
+    - copyfail_mitigation_reboot_allowed | bool
+    - not (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+
+- name: Group CopyFail manual reboot (coalesce partner blocked auto-reboot)
+  listen: Mitigation reboot coalesced
+  ansible.builtin.group_by:
+    key: copyfail_report_manual_reboot_required
+  changed_when: false
+  when:
+    - mitigation_coalesce_reboot | default(false)
+    - copyfail_mitigation_reboot_allowed | bool
+    - not (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+    - copyfail_mitigation_state == 'present'
+
+- name: Group CopyFail manual rollback reboot (coalesce partner blocked auto-reboot)
+  listen: Mitigation reboot coalesced
+  ansible.builtin.group_by:
+    key: copyfail_report_manual_rollback_reboot_required
+  changed_when: false
+  when:
+    - mitigation_coalesce_reboot | default(false)
+    - copyfail_mitigation_reboot_allowed | bool
+    - not (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+    - copyfail_mitigation_state == 'absent'

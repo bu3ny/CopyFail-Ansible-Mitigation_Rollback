@@ -1,0 +1,3 @@
+---
+# Example overrides for hosts in dirtyfrag_safe_to_reboot (see role defaults for full list).
+dirtyfrag_mitigation_reboot: false

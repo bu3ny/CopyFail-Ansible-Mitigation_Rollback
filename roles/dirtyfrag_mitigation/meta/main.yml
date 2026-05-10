@@ -1,0 +1,36 @@
+---
+galaxy_info:
+  author: Moustafa Harbi - mharbi@redhat.com
+  description: >-
+    Applies or rolls back modprobe (and optional sysctl) mitigations for Dirty Frag /
+    Copy.Fail2 (CVE-2026-43284 ESP, CVE-2026-43500 rxrpc) on Red Hat-like (including EL 6–10),
+    Debian-like, and SUSE hosts.
+  license: GPL-3.0-only
+  min_ansible_version: "2.13"
+  platforms:
+    - name: EL
+      versions:
+        - "6"
+        - "7"
+        - "8"
+        - "9"
+        - "10"
+    - name: Fedora
+      versions:
+        - all
+    - name: Ubuntu
+      versions:
+        - all
+    - name: Debian
+      versions:
+        - all
+    - name: opensuse
+      versions:
+        - all
+    - name: SLES
+      versions:
+        - all
+    - name: Amazon
+      versions:
+        - all
+dependencies: []

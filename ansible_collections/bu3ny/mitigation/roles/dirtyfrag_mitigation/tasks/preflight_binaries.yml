@@ -1,0 +1,35 @@
+---
+- name: Check modprobe is available
+  ansible.builtin.command:
+    argv:
+      - modprobe
+      - -V
+  register: dirtyfrag_mitigation_preflight_modprobe
+  changed_when: false
+
+- name: Assert modprobe is available
+  ansible.builtin.assert:
+    that:
+      - dirtyfrag_mitigation_preflight_modprobe.rc == 0
+    fail_msg: >-
+      modprobe is required (kmod / module-init-tools). EL6 targets may need python2.7 and
+      ansible_python_interpreter set on the host.
+
+- name: Check sysctl is available (optional sysctl mitigation path)
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -c
+      - command -v sysctl
+  register: dirtyfrag_mitigation_preflight_sysctl
+  changed_when: false
+  failed_when: false
+  when: dirtyfrag_mitigation_unprivileged_userns_sysctl | bool
+
+- name: Assert sysctl is available when unprivileged user namespace sysctl is enabled
+  ansible.builtin.assert:
+    that:
+      - dirtyfrag_mitigation_preflight_sysctl.rc == 0
+    fail_msg: >-
+      sysctl must be in PATH when dirtyfrag_mitigation_unprivileged_userns_sysctl is true.
+  when: dirtyfrag_mitigation_unprivileged_userns_sysctl | bool

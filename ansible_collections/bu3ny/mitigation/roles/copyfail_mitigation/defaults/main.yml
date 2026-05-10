@@ -1,0 +1,58 @@
+---
+# Bumped when rollback/present behaviour changes; use `ansible-playbook -v` to print and verify which tree Ansible runs.
+copyfail_mitigation_role_revision: "2026.05.03+cve-dropin"
+copyfail_mitigation_state: present
+copyfail_mitigation_reboot: true
+copyfail_mitigation_virtual_reboot_timeout: 300
+copyfail_mitigation_physical_reboot_timeout: 1800
+copyfail_mitigation_reboot_message: "Reboot initiated by the CopyFail mitigation role"
+copyfail_mitigation_reboot_allowed_group: copyfail_safe_to_reboot
+copyfail_mitigation_manual_reboot_group: copyfail_manual_reboot
+# With dirtyfrag_mitigation: set true, list role mitigation_coalesce_reboot first, then post_tasks flush_handlers.
+mitigation_coalesce_reboot: false
+copyfail_mitigation_kernel_arg: initcall_blacklist=algif_aead_init
+copyfail_mitigation_modprobe_path: /etc/modprobe.d/copyfail-algif_aead.conf
+# absent only: extra absolute paths under /etc/modprobe.d/ to delete (e.g. distro CVE drop-ins).
+# Example: ["/etc/modprobe.d/disable-algif_aead.conf"]. Must stay under /etc/modprobe.d/ (no ..).
+copyfail_mitigation_absent_extra_modprobe_paths: []
+# absent only: remove the common Ubuntu CVE drop-in path (install algif_aead /bin/false); not gated on os_family.
+copyfail_mitigation_absent_remove_disable_algif_aead_conffile: true
+copyfail_mitigation_absent_disable_algifaead_conffile_path: /etc/modprobe.d/disable-algif_aead.conf
+copyfail_mitigation_default_grub_path: /etc/default/grub
+# SUSE: path passed to grub2-mkconfig -o (set per site if EFI uses a different grub.cfg).
+copyfail_mitigation_suse_grub_mkconfig_output: /boot/grub2/grub.cfg
+# After rollback + reboot, modprobe -n -v must not show install algif_aead → /bin/false or blacklist algif_aead (leftover modprobe.d).
+copyfail_mitigation_verify_modprobe_policy_after_rollback: true
+# When false (default), fail if bootloader state cannot be parsed (grubby lines or GRUB_CMDLINE_*).
+copyfail_mitigation_allow_unparsed_grubby: false
+# Compare ansible_facts['kernel'] (leading N.N[.N]) to NVD CVE-2026-31431 linux:linux_kernel CPE bands; skip present mitigation when not vulnerable.
+# Default false: RHEL kernel NVR often stays on a 5.14/5.15-style triplet while backports fix CVEs, so NVD upstream bands can mis-classify EL kernels.
+# Set true for distros whose kernel fact prefix tracks upstream (many Ubuntu/SUSE images) to auto-skip after fixed upstream-equivalent kernels.
+copyfail_mitigation_nvd_upstream_vulnerable_check: false
+# Major releases when ansible_facts['distribution'] == 'RedHat' (other Red Hat-like distros skip this filter).
+copyfail_mitigation_supported_rhel_major_versions:
+  - 8
+  - 9
+  - 10
+# ansible_facts['distribution'] values (extend as needed).
+copyfail_mitigation_supported_redhat_like_distributions:
+  - RedHat
+  - CentOS
+  - CentOS Stream
+  - Fedora
+  - Rocky
+  - AlmaLinux
+  - OracleLinux
+  - Amazon
+  - Scientific
+  - Scientific Linux
+copyfail_mitigation_supported_debian_like_distributions:
+  - Debian
+  - Ubuntu
+  - Linuxmint
+  - Kali
+  - "Pop!_OS"
+copyfail_mitigation_supported_suse_distributions:
+  - SLES
+  - openSUSE Leap
+  - openSUSE Tumbleweed

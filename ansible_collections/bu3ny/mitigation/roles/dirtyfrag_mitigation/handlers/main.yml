@@ -1,0 +1,327 @@
+---
+- name: Reboot for Dirty Frag mitigation
+  listen: Dirty Frag reboot required
+  ansible.builtin.reboot:
+    msg: "{{ dirtyfrag_mitigation_reboot_message }}"
+    reboot_timeout: "{{ dirtyfrag_mitigation_reboot_timeout }}"
+  when:
+    - dirtyfrag_mitigation_reboot_allowed | bool
+    - not (mitigation_coalesce_reboot | default(false))
+
+# Present: expect install-to-/bin/false. Absent (rollback): optional modprobe gate when verify flag is true.
+- name: Dry-run modprobe after reboot (esp4)
+  listen:
+    - Dirty Frag reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.command:
+    argv:
+      - modprobe
+      - -n
+      - -v
+      - esp4
+  register: dirtyfrag_mitigation_post_reboot_dry_esp4
+  changed_when: false
+  failed_when: false
+  when:
+    - dirtyfrag_mitigation_reboot_allowed | bool
+    - >-
+      (dirtyfrag_mitigation_state == 'present')
+      or (
+        (dirtyfrag_mitigation_state == 'absent')
+        and (dirtyfrag_mitigation_verify_modprobe_policy_after_rollback | bool)
+      )
+    - >-
+      (not (mitigation_coalesce_reboot | default(false)))
+      or (
+        (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+        and (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+      )
+
+- name: Dry-run modprobe after reboot (esp6)
+  listen:
+    - Dirty Frag reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.command:
+    argv:
+      - modprobe
+      - -n
+      - -v
+      - esp6
+  register: dirtyfrag_mitigation_post_reboot_dry_esp6
+  changed_when: false
+  failed_when: false
+  when:
+    - dirtyfrag_mitigation_reboot_allowed | bool
+    - >-
+      (dirtyfrag_mitigation_state == 'present')
+      or (
+        (dirtyfrag_mitigation_state == 'absent')
+        and (dirtyfrag_mitigation_verify_modprobe_policy_after_rollback | bool)
+      )
+    - >-
+      (not (mitigation_coalesce_reboot | default(false)))
+      or (
+        (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+        and (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+      )
+
+- name: Dry-run modprobe after reboot (rxrpc)
+  listen:
+    - Dirty Frag reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.command:
+    argv:
+      - modprobe
+      - -n
+      - -v
+      - rxrpc
+  register: dirtyfrag_mitigation_post_reboot_dry_rxrpc
+  changed_when: false
+  failed_when: false
+  when:
+    - dirtyfrag_mitigation_reboot_allowed | bool
+    - >-
+      (dirtyfrag_mitigation_state == 'present')
+      or (
+        (dirtyfrag_mitigation_state == 'absent')
+        and (dirtyfrag_mitigation_verify_modprobe_policy_after_rollback | bool)
+      )
+    - >-
+      (not (mitigation_coalesce_reboot | default(false)))
+      or (
+        (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+        and (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+      )
+
+- name: Verify modprobe policy blocks esp4/esp6/rxrpc after reboot (present)
+  listen:
+    - Dirty Frag reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          (dirtyfrag_mitigation_post_reboot_dry_esp4.stdout | default(''))
+          ~ (dirtyfrag_mitigation_post_reboot_dry_esp4.stderr | default(''))
+        ) is search('esp4')
+        and (
+          (dirtyfrag_mitigation_post_reboot_dry_esp4.stdout | default(''))
+          ~ (dirtyfrag_mitigation_post_reboot_dry_esp4.stderr | default(''))
+        ) is search('/bin/false')
+      - >-
+        (
+          (dirtyfrag_mitigation_post_reboot_dry_esp6.stdout | default(''))
+          ~ (dirtyfrag_mitigation_post_reboot_dry_esp6.stderr | default(''))
+        ) is search('esp6')
+        and (
+          (dirtyfrag_mitigation_post_reboot_dry_esp6.stdout | default(''))
+          ~ (dirtyfrag_mitigation_post_reboot_dry_esp6.stderr | default(''))
+        ) is search('/bin/false')
+      - >-
+        (
+          (dirtyfrag_mitigation_post_reboot_dry_rxrpc.stdout | default(''))
+          ~ (dirtyfrag_mitigation_post_reboot_dry_rxrpc.stderr | default(''))
+        ) is search('rxrpc')
+        and (
+          (dirtyfrag_mitigation_post_reboot_dry_rxrpc.stdout | default(''))
+          ~ (dirtyfrag_mitigation_post_reboot_dry_rxrpc.stderr | default(''))
+        ) is search('/bin/false')
+    fail_msg: >-
+      Post-reboot modprobe dry-run did not show /bin/false policy for esp4/esp6/rxrpc.
+      esp4={{ (dirtyfrag_mitigation_post_reboot_dry_esp4.stdout | default(''))
+      ~ (dirtyfrag_mitigation_post_reboot_dry_esp4.stderr | default('')) }}
+  when:
+    - dirtyfrag_mitigation_reboot_allowed | bool
+    - dirtyfrag_mitigation_state == 'present'
+    - >-
+      (not (mitigation_coalesce_reboot | default(false)))
+      or (
+        (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+        and (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+      )
+
+# Rollback: no install-to-/bin/false or blacklist for esp4/esp6/rxrpc (when verification enabled).
+- name: Verify Dirty Frag rollback after reboot
+  listen:
+    - Dirty Frag reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (dirtyfrag_mitigation_verify_modprobe_policy_after_rollback | bool)
+        or (
+          not (
+            (
+              (dirtyfrag_mitigation_post_reboot_dry_esp4.stdout | default(''))
+              ~ (dirtyfrag_mitigation_post_reboot_dry_esp4.stderr | default(''))
+            ) is search('(?i)install\\s+esp4\\s+/bin/false')
+          )
+          and not (
+            (
+              (dirtyfrag_mitigation_post_reboot_dry_esp4.stdout | default(''))
+              ~ (dirtyfrag_mitigation_post_reboot_dry_esp4.stderr | default(''))
+            ) is search('(?i)blacklist\\s+esp4\\b')
+          )
+        )
+      - >-
+        not (dirtyfrag_mitigation_verify_modprobe_policy_after_rollback | bool)
+        or (
+          not (
+            (
+              (dirtyfrag_mitigation_post_reboot_dry_esp6.stdout | default(''))
+              ~ (dirtyfrag_mitigation_post_reboot_dry_esp6.stderr | default(''))
+            ) is search('(?i)install\\s+esp6\\s+/bin/false')
+          )
+          and not (
+            (
+              (dirtyfrag_mitigation_post_reboot_dry_esp6.stdout | default(''))
+              ~ (dirtyfrag_mitigation_post_reboot_dry_esp6.stderr | default(''))
+            ) is search('(?i)blacklist\\s+esp6\\b')
+          )
+        )
+      - >-
+        not (dirtyfrag_mitigation_verify_modprobe_policy_after_rollback | bool)
+        or (
+          not (
+            (
+              (dirtyfrag_mitigation_post_reboot_dry_rxrpc.stdout | default(''))
+              ~ (dirtyfrag_mitigation_post_reboot_dry_rxrpc.stderr | default(''))
+            ) is search('(?i)install\\s+rxrpc\\s+/bin/false')
+          )
+          and not (
+            (
+              (dirtyfrag_mitigation_post_reboot_dry_rxrpc.stdout | default(''))
+              ~ (dirtyfrag_mitigation_post_reboot_dry_rxrpc.stderr | default(''))
+            ) is search('(?i)blacklist\\s+rxrpc\\b')
+          )
+        )
+    fail_msg: >-
+      Dirty Frag rollback verification failed after reboot. When
+      dirtyfrag_mitigation_verify_modprobe_policy_after_rollback is true, modprobe -n -v must not show
+      install esp4/esp6/rxrpc to /bin/false or blacklist for those modules (foreign /etc/modprobe.d/ rules may remain).
+      esp4 stdout+stderr (truncated):
+      {{
+        (
+          (dirtyfrag_mitigation_post_reboot_dry_esp4.stdout | default(''))
+          ~ (dirtyfrag_mitigation_post_reboot_dry_esp4.stderr | default(''))
+        ) | truncate(2048, true, '...')
+      }}.
+    success_msg: >-
+      Dirty Frag rollback verified after reboot: modprobe dry-run shows no install-to-/bin/false
+      or blacklist for esp4/esp6/rxrpc (when verification is enabled).
+  when:
+    - dirtyfrag_mitigation_reboot_allowed | bool
+    - dirtyfrag_mitigation_state == 'absent'
+    - >-
+      (not (mitigation_coalesce_reboot | default(false)))
+      or (
+        (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+        and (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+      )
+
+- name: Group hosts rebooted and mitigated
+  listen:
+    - Dirty Frag reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.group_by:
+    key: dirtyfrag_report_rebooted_mitigated
+  changed_when: false
+  when:
+    - dirtyfrag_mitigation_reboot_allowed | bool
+    - dirtyfrag_mitigation_state == 'present'
+    - >-
+      (not (mitigation_coalesce_reboot | default(false)))
+      or (
+        (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+        and (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+      )
+
+- name: Group hosts rebooted and rolled back
+  listen:
+    - Dirty Frag reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.group_by:
+    key: dirtyfrag_report_rebooted_and_rolled_back
+  changed_when: false
+  when:
+    - dirtyfrag_mitigation_reboot_allowed | bool
+    - dirtyfrag_mitigation_state == 'absent'
+    - >-
+      (not (mitigation_coalesce_reboot | default(false)))
+      or (
+        (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+        and (hostvars[inventory_hostname].get('dirtyfrag_mitigation_reboot_allowed', true) | bool)
+      )
+
+- name: Report pending reboot for Dirty Frag (reboot disabled)
+  listen:
+    - Dirty Frag reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        'Dirty Frag rollback still needs a reboot on this host because esp4/esp6/rxrpc are '
+        ~ 'still loaded after persistence was removed, but reboot is disabled by configuration.'
+        if dirtyfrag_mitigation_state == 'absent'
+        else
+        'Dirty Frag mitigation still needs a reboot on this host to enforce modprobe policy, '
+        ~ 'but reboot is disabled by configuration.'
+      }}
+  when: not dirtyfrag_mitigation_reboot_allowed | bool
+
+- name: Group hosts requiring manual reboot (present)
+  listen:
+    - Dirty Frag reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.group_by:
+    key: dirtyfrag_report_manual_reboot_required
+  changed_when: false
+  when:
+    - not dirtyfrag_mitigation_reboot_allowed | bool
+    - dirtyfrag_mitigation_state == 'present'
+
+- name: Group hosts pending rollback reboot
+  listen:
+    - Dirty Frag reboot required
+    - Mitigation reboot coalesced
+  ansible.builtin.group_by:
+    key: dirtyfrag_report_manual_rollback_reboot_required
+  changed_when: false
+  when:
+    - not dirtyfrag_mitigation_reboot_allowed | bool
+    - dirtyfrag_mitigation_state == 'absent'
+
+# Coalesced reboot is skipped unless CopyFail also allows auto-reboot on this host.
+- name: Report Dirty Frag coalesce blocked (CopyFail disallows auto-reboot)
+  listen: Mitigation reboot coalesced
+  ansible.builtin.debug:
+    msg: >-
+      Dirty Frag changes are staged but no coalesced reboot ran because CopyFail
+      disallows auto-reboot on this host (copyfail_mitigation_reboot_allowed=false).
+      Reboot manually to finish Dirty Frag convergence, or align reboot policy for both roles.
+  when:
+    - mitigation_coalesce_reboot | default(false)
+    - dirtyfrag_mitigation_reboot_allowed | bool
+    - not (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+
+- name: Group Dirty Frag manual reboot (coalesce partner blocked auto-reboot)
+  listen: Mitigation reboot coalesced
+  ansible.builtin.group_by:
+    key: dirtyfrag_report_manual_reboot_required
+  changed_when: false
+  when:
+    - mitigation_coalesce_reboot | default(false)
+    - dirtyfrag_mitigation_reboot_allowed | bool
+    - not (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+    - dirtyfrag_mitigation_state == 'present'
+
+- name: Group Dirty Frag manual rollback reboot (coalesce partner blocked auto-reboot)
+  listen: Mitigation reboot coalesced
+  ansible.builtin.group_by:
+    key: dirtyfrag_report_manual_rollback_reboot_required
+  changed_when: false
+  when:
+    - mitigation_coalesce_reboot | default(false)
+    - dirtyfrag_mitigation_reboot_allowed | bool
+    - not (hostvars[inventory_hostname].get('copyfail_mitigation_reboot_allowed', true) | bool)
+    - dirtyfrag_mitigation_state == 'absent'

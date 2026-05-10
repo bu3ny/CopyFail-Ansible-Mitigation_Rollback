@@ -1,0 +1,10 @@
+---
+galaxy_info:
+  author: Moustafa Harbi - mharbi@redhat.com
+  description: >-
+    Registers a single ansible.builtin.reboot handler for Mitigation reboot coalesced.
+    List this role before copyfail_mitigation and dirtyfrag_mitigation when using
+    mitigation_coalesce_reboot.
+  license: GPL-3.0-only
+  min_ansible_version: "2.13"
+dependencies: []

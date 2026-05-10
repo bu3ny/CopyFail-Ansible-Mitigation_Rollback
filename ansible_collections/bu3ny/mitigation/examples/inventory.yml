@@ -1,0 +1,25 @@
+---
+# Same layout as inventory.ini. Replace RFC 5737 placeholders with real hosts.
+all:
+  children:
+    copyfail_safe_to_reboot:
+      hosts:
+        lab-a:
+          ansible_host: 203.0.113.10
+          ansible_user: root
+        lab-b:
+          ansible_host: 203.0.113.11
+          ansible_user: root
+    copyfail_manual_reboot:
+      hosts: {}
+    # Dirty Frag reboot groups (defaults match dirtyfrag_mitigation_*_group in the role).
+    dirtyfrag_safe_to_reboot:
+      hosts:
+        lab-a:
+          ansible_host: 203.0.113.10
+          ansible_user: root
+        lab-b:
+          ansible_host: 203.0.113.11
+          ansible_user: root
+    dirtyfrag_manual_reboot:
+      hosts: {}

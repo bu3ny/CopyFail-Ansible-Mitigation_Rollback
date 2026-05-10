@@ -1,0 +1,20 @@
+---
+# Pair: playbook-coalesce-rollback.yml — see collection README for all six example playbooks.
+# Apply CopyFail + Dirty Frag with a single coalesced reboot.
+# List mitigation_coalesce_reboot FIRST so the Mitigation reboot coalesced handler exists.
+- name: Apply CopyFail and Dirty Frag mitigations (coalesced reboot)
+  hosts: all
+  gather_facts: false
+  become: true
+  collections:
+    - bu3ny.mitigation
+  vars:
+    mitigation_coalesce_reboot: true
+  roles:
+    - role: bu3ny.mitigation.mitigation_coalesce_reboot
+    - role: bu3ny.mitigation.copyfail_mitigation
+    - role: bu3ny.mitigation.dirtyfrag_mitigation
+  post_tasks:
+    - name: Flush reboot and verification handlers once for both roles
+      ansible.builtin.meta: flush_handlers
+      when: mitigation_coalesce_reboot | default(false)

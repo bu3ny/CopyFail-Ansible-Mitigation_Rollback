@@ -1,0 +1,10 @@
+---
+# Pair: copyfail_mitigate.yaml — see README “Repository playbooks” for all six entry points.
+- name: Roll back CopyFail mitigation
+  hosts: all
+  gather_facts: false
+  become: true
+  roles:
+    - role: copyfail_mitigation
+      vars:
+        copyfail_mitigation_state: absent

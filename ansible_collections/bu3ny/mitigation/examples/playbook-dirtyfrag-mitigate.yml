@@ -1,0 +1,12 @@
+---
+# Pair: playbook-dirtyfrag-rollback.yml — see collection README for all six example playbooks.
+- name: Apply Dirty Frag (Copy.Fail2) modprobe mitigation
+  hosts: all
+  gather_facts: false
+  become: true
+  collections:
+    - bu3ny.mitigation
+  roles:
+    - role: bu3ny.mitigation.dirtyfrag_mitigation
+      vars:
+        dirtyfrag_mitigation_state: present

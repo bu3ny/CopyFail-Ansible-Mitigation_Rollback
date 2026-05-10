@@ -1,0 +1,99 @@
+---
+# Fail fast with package hints before mutating bootloader or modprobe.
+- name: Check modprobe is available
+  ansible.builtin.command:
+    argv:
+      - modprobe
+      - -V
+  register: copyfail_mitigation_preflight_modprobe
+  changed_when: false
+
+- name: Assert modprobe is available
+  ansible.builtin.assert:
+    that:
+      - copyfail_mitigation_preflight_modprobe.rc == 0
+    fail_msg: >-
+      modprobe is required. Install the distribution kernel/module package set
+      (e.g. kmod / module-init-tools).
+
+- name: Check grubby is available (Red Hat family bootloader path)
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -c
+      - command -v grubby
+  register: copyfail_mitigation_preflight_grubby
+  changed_when: false
+  failed_when: false
+  when: copyfail_mitigation_bootloader_backend == 'grubby'
+
+- name: Assert grubby is available
+  ansible.builtin.assert:
+    that:
+      - copyfail_mitigation_preflight_grubby.rc == 0
+    fail_msg: >-
+      grubby is required for this OS family. Install the grubby package, e.g.
+      `dnf install grubby` / `yum install grubby` on RHEL, AlmaLinux, Rocky, Oracle Linux,
+      CentOS, Scientific Linux; `dnf install grubby` on Fedora; on Amazon Linux 2
+      `yum install grubby` (AL2023: use the distro-provided bootloader tool if grubby
+      is not shipped—open an issue with `ansible_distribution_version` facts). The
+      role resolves bootloader tools via the remote PATH.
+  when: copyfail_mitigation_bootloader_backend == 'grubby'
+
+- name: Stat GRUB defaults file (Debian/SUSE bootloader path)
+  ansible.builtin.stat:
+    path: "{{ copyfail_mitigation_default_grub_path }}"
+  register: copyfail_mitigation_preflight_default_grub
+  when: copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+
+- name: Assert GRUB defaults file exists
+  ansible.builtin.assert:
+    that:
+      - copyfail_mitigation_preflight_default_grub.stat.exists
+      - copyfail_mitigation_preflight_default_grub.stat.isreg
+    fail_msg: >-
+      Missing {{ copyfail_mitigation_default_grub_path }}. Install GRUB, e.g.
+      Ubuntu/Debian: `apt install grub-common` (and usually `grub-pc` or `grub-efi-amd64`);
+      SUSE: `zypper in grub2`.
+  when: copyfail_mitigation_bootloader_backend in ['debian', 'suse']
+
+- name: Check update-grub is available (Debian family)
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -c
+      - command -v update-grub
+  register: copyfail_mitigation_preflight_update_grub
+  changed_when: false
+  failed_when: false
+  when: copyfail_mitigation_bootloader_backend == 'debian'
+
+- name: Assert update-grub is available on Debian family
+  ansible.builtin.assert:
+    that:
+      - copyfail_mitigation_preflight_update_grub.rc == 0
+    fail_msg: >-
+      update-grub not found in the remote PATH.
+      On Ubuntu install `grub-common` (and `grub-pc` or `grub-efi-amd64` as appropriate);
+      on Debian install `grub-common` / `grub2-common`.
+  when: copyfail_mitigation_bootloader_backend == 'debian'
+
+- name: Check grub2-mkconfig is available (SUSE)
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -c
+      - command -v grub2-mkconfig
+  register: copyfail_mitigation_preflight_grub2_mkconfig
+  changed_when: false
+  failed_when: false
+  when: copyfail_mitigation_bootloader_backend == 'suse'
+
+- name: Assert grub2-mkconfig is available on SUSE
+  ansible.builtin.assert:
+    that:
+      - copyfail_mitigation_preflight_grub2_mkconfig.rc == 0
+    fail_msg: >-
+      grub2-mkconfig not found in the remote PATH. Install GRUB2, e.g.
+      `zypper in grub2`.
+  when: copyfail_mitigation_bootloader_backend == 'suse'

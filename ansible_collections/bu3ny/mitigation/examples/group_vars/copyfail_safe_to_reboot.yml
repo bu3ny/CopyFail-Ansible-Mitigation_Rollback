@@ -1,0 +1,5 @@
+---
+# Example overrides for hosts in copyfail_safe_to_reboot (see role defaults for full list).
+# Reboot is disabled here for safer lab defaults; set true when the role should reboot
+# after bootloader/modprobe changes.
+copyfail_mitigation_reboot: false
